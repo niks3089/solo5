@@ -78,7 +78,7 @@ muen/muen-sinfo.o \
 $(COMMON_COBJS)
 
 HEADERS=\
-kernel.h
+kernel.h 
 
 all: virtio ukvm
 

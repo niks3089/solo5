@@ -209,6 +209,34 @@ static void hypercall_netread(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     rd->ret = 0;
 }
 
+static void hypercall_netread_v(struct ukvm_hv *hv, ukvm_gpa_t gpa)
+{
+    struct ukvm_netread *rd =
+        UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netread));
+    int ret;
+
+    ret = read(netfd, UKVM_CHECKED_GPA_P(hv, rd->data, rd->len), rd->len);
+    if ((ret == 0) ||
+        (ret == -1 && errno == EAGAIN)) {
+        rd->ret = -1;
+        return;
+    }
+    assert(ret > 0);
+    rd->len = ret;
+    rd->ret = 0;
+}
+
+static void hypercall_netwrite_v(struct ukvm_hv *hv, ukvm_gpa_t gpa)
+{
+    struct ukvm_netwrite *wr =
+        UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netwrite));
+    int ret;
+
+    ret = write(netfd, UKVM_CHECKED_GPA_P(hv, wr->data, wr->len), wr->len);
+    assert(wr->len == ret);
+    wr->ret = 0;
+}
+
 static int handle_cmdarg(char *cmdarg)
 {
     if (!strncmp("--net=", cmdarg, 6)) {
@@ -271,6 +299,10 @@ static int setup(struct ukvm_hv *hv)
                 hypercall_netwrite) == 0);
     assert(ukvm_core_register_hypercall(UKVM_HYPERCALL_NETREAD,
                 hypercall_netread) == 0);
+    assert(ukvm_core_register_hypercall(UKVM_HYPERCALL_VECTOR_NETREAD,
+                hypercall_netread_v) == 0);
+    assert(ukvm_core_register_hypercall(UKVM_HYPERCALL_VECTOR_NETWRITE,
+                hypercall_netwrite_v) == 0);
     assert(ukvm_core_register_pollfd(netfd) == 0);
 
     return 0;

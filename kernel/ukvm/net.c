@@ -59,6 +59,32 @@ char *solo5_net_mac_str(void)
     return mac_str;
 }
 
+/* ukvm net interface */
+int solo5_net_write_queue_vector(uint8_t *data, int n)
+{
+    if (data || n ) {
+    }
+    return 0;
+}
+
+void solo5_net_write_flush_vector()
+{
+}
+
+int solo5_net_read_vector(uint8_t *data, int *n)
+{
+    volatile struct ukvm_netread rd;
+
+    rd.data = data;
+    rd.len = *n;
+    rd.ret = 0;
+
+    ukvm_do_hypercall(UKVM_HYPERCALL_VECTOR_NETREAD, &rd);
+
+    *n = rd.len;
+    return rd.ret;
+}
+
 void net_init(void)
 {
 }
