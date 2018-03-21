@@ -139,6 +139,7 @@ struct ukvm_module {
     int (*setup)(struct ukvm_hv *hv);
     int (*handle_cmdarg)(char *cmdarg);
     char *(*usage)(void);
+    void (*cleanup)(struct ukvm_hv *hv);
 };
 
 /*

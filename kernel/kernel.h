@@ -136,7 +136,9 @@ typedef enum {
     INFO, 
     DEBUG,
 } log_level_t;
+#ifdef __SOLO5_KERNEL__
 int log(log_level_t level, const char *fmt, ...);
+#endif
 void log_set_level(log_level_t level);
 
 /* compiler-only memory "barrier" */

@@ -18,55 +18,14 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include "kernel.h"
-#include "shm_net.h"
+#define PACKET_SIZE   1514
+#define MUENNET_PROTO 0x7ade5c549b08e814ULL
 
-/* ukvm net interface */
-int solo5_net_write_sync(uint8_t *data, int n)
-{
-#if 0
-    volatile struct ukvm_netwrite wr;
+struct net_msg {
+    uint8_t data[PACKET_SIZE];
+    uint16_t length;
+} __attribute__((packed));
 
-    wr.data = data;
-    wr.len = n;
-    wr.ret = 0;
-
-    ukvm_do_hypercall(UKVM_HYPERCALL_NETWRITE, &wr);
-
-    return wr.ret;
-#endif
-    return shm_net_write(data, n);
-}
-
-int solo5_net_read_sync(uint8_t *data, int *n)
-{
-#if 0
-    volatile struct ukvm_netread rd;
-
-    rd.data = data;
-    rd.len = *n;
-    rd.ret = 0;
-
-    ukvm_do_hypercall(UKVM_HYPERCALL_NETREAD, &rd);
-
-    *n = rd.len;
-    return rd.ret;
-#endif
-    return shm_net_read(data, n); 
-}
-
-static char mac_str[18];
-char *solo5_net_mac_str(void)
-{
-    volatile struct ukvm_netinfo info;
-
-    ukvm_do_hypercall(UKVM_HYPERCALL_NETINFO, &info);
-
-    memcpy(mac_str, (void *)&info, 18);
-    return mac_str;
-}
-
-void net_init(void)
-{
-    shm_net_init();
-}
+int shm_net_write(uint8_t *data, int n);
+int shm_net_read(uint8_t *data, int *n);
+void shm_net_init();

@@ -22,6 +22,7 @@
  * ukvm_module_net.c: Network device module.
  */
 
+#define _BSD_SOURCE
 #include <assert.h>
 #include <err.h>
 #include <errno.h>
@@ -43,6 +44,8 @@
 #include <sys/socket.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
+#include <pthread.h>
+static pthread_t tid;
 
 #elif defined(__FreeBSD__)
 
@@ -55,6 +58,7 @@
 #endif
 
 #include "ukvm.h"
+#include "shm_net.h"
 
 static char *netiface;
 static int netfd;
@@ -209,32 +213,40 @@ static void hypercall_netread(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     rd->ret = 0;
 }
 
-static void hypercall_netread_v(struct ukvm_hv *hv, ukvm_gpa_t gpa)
+void* io_thread()
 {
-    struct ukvm_netread *rd =
-        UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netread));
-    int ret;
+    struct net_msg pkt;
+    int ret, tap_no_data = 0, shm_no_data = 0;
 
-    ret = read(netfd, UKVM_CHECKED_GPA_P(hv, rd->data, rd->len), rd->len);
-    if ((ret == 0) ||
-        (ret == -1 && errno == EAGAIN)) {
-        rd->ret = -1;
-        return;
+    while (1) {
+        /* Read from tap interface and write to shmstream */
+        ret = read(netfd, pkt.data, PACKET_SIZE);
+        if ((ret == 0) ||
+            (ret == -1 && errno == EAGAIN)) {
+            /* NO data */
+            tap_no_data = 1;
+        } else if (ret > 0) {
+            shm_net_write(pkt.data, ret);
+        } else {
+            /* error */
+            assert(0);
+        }
+
+        /* Read from shmstream and write to tap interface */
+        if (shm_net_read(pkt.data, (int *)&pkt.length) == 0) {
+            ret = write(netfd, pkt.data, pkt.length);
+            assert(ret == pkt.length);
+        } else {
+            shm_no_data = 1;
+        }
+
+        if (tap_no_data && shm_no_data) {
+            /* Sleep for a millisec */
+            usleep(1000);
+        }
+        tap_no_data = 0;
+        shm_no_data = 0;
     }
-    assert(ret > 0);
-    rd->len = ret;
-    rd->ret = 0;
-}
-
-static void hypercall_netwrite_v(struct ukvm_hv *hv, ukvm_gpa_t gpa)
-{
-    struct ukvm_netwrite *wr =
-        UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netwrite));
-    int ret;
-
-    ret = write(netfd, UKVM_CHECKED_GPA_P(hv, wr->data, wr->len), wr->len);
-    assert(wr->len == ret);
-    wr->ret = 0;
 }
 
 static int handle_cmdarg(char *cmdarg)
@@ -293,17 +305,19 @@ static int setup(struct ukvm_hv *hv)
                  guest_mac[3], guest_mac[4], guest_mac[5]);
     }
 
+    int flags = fcntl(netfd, F_GETFL, 0);
+    fcntl(netfd, F_SETFL, flags | O_NONBLOCK);
+
     assert(ukvm_core_register_hypercall(UKVM_HYPERCALL_NETINFO,
                 hypercall_netinfo) == 0);
     assert(ukvm_core_register_hypercall(UKVM_HYPERCALL_NETWRITE,
                 hypercall_netwrite) == 0);
     assert(ukvm_core_register_hypercall(UKVM_HYPERCALL_NETREAD,
                 hypercall_netread) == 0);
-    assert(ukvm_core_register_hypercall(UKVM_HYPERCALL_VECTOR_NETREAD,
-                hypercall_netread_v) == 0);
-    assert(ukvm_core_register_hypercall(UKVM_HYPERCALL_VECTOR_NETWRITE,
-                hypercall_netwrite_v) == 0);
     assert(ukvm_core_register_pollfd(netfd) == 0);
+
+    /* Add a cmd line --shm to use shm */
+    pthread_create(&tid, NULL, &io_thread, NULL);
 
     return 0;
 }
@@ -314,9 +328,17 @@ static char *usage(void)
         "    [ --net-mac=HWADDR ] (guest MAC address)";
 }
 
+static void cleanup(struct ukvm_hv *hv)
+{
+    if (pthread_cancel(tid) == 0) {
+        pthread_join(tid, NULL); 
+    }
+}
+
 struct ukvm_module ukvm_module_net = {
     .name = "net",
     .setup = setup,
     .handle_cmdarg = handle_cmdarg,
-    .usage = usage
+    .usage = usage,
+    .cleanup = cleanup
 };

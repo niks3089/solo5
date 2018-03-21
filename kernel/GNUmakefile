@@ -18,6 +18,13 @@
 
 include $(TOP)/Makefile.common
 
+SHS_COBJS=\
+shmstream/shm_channel.o \
+shmstream/shm_reader.o \
+shmstream/shm_sinfo.o \
+shmstream/shm_net.o \
+shmstream/shm_writer.o
+
 COMMON_COBJS=\
 abort.o \
 cpu_${TARGET_ARCH}.o \
@@ -29,7 +36,8 @@ mem.o \
 malloc.o \
 exit.o \
 log.o \
-cmdline.o
+cmdline.o \
+$(SHS_COBJS)
 
 COMMON_UKVM_COBJS=\
 ukvm/kernel.o \
@@ -65,20 +73,16 @@ $(COMMON_COBJS)
 
 MUEN_COBJS=\
 $(COMMON_UKVM_COBJS) \
-muen/channel.o \
-muen/reader.o \
-muen/writer.o \
 muen/muen-block.o \
 muen/muen-clock.o \
 muen/muen-console.o \
 muen/muen-net.o \
 muen/muen-platform_init.o \
 muen/muen-poll.o \
-muen/muen-sinfo.o \
 $(COMMON_COBJS)
 
 HEADERS=\
-kernel.h 
+kernel.h
 
 all: virtio ukvm
 
