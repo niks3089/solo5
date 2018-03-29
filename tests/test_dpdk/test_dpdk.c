@@ -26,7 +26,7 @@ static void puts(const char *s)
     solo5_console_write(s, strlen(s));
 }
 
-int solo5_app_main(char *cmdline __attribute__((unused)))
+int solo5_app_main(const struct solo5_start_info *si __attribute__((unused)))
 {
     puts("\n**** Solo5 test_dpdk ****\n\n");
     return 0;
