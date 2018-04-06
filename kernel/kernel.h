@@ -1,4 +1,4 @@
-/* 
+/*
  * Copyright (c) 2015-2017 Contributors as noted in the AUTHORS file
  *
  * This file is part of Solo5, a unikernel base layer.
@@ -122,7 +122,9 @@ typedef enum {
     INFO, 
     DEBUG,
 } log_level_t;
+#ifdef __SOLO5_KERNEL__
 int log(log_level_t level, const char *fmt, ...);
+#endif
 void log_set_level(log_level_t level);
 
 /* compiler-only memory "barrier" */

@@ -63,11 +63,11 @@ void muen_channel_init_reader(struct muchannel_reader *reader, uint64_t protocol
 }
 
 enum muchannel_reader_result muen_channel_read(
-        const struct muchannel * const channel,
+        struct muchannel *channel,
         struct muchannel_reader *reader,
         void *element)
 {
-    uint64_t epoch, pos, wc, wsc;
+    uint64_t epoch, pos, wc, wsc, xon;
     enum muchannel_reader_result result;
 
     if (muen_channel_is_active(channel)) {
@@ -90,11 +90,19 @@ enum muchannel_reader_result muen_channel_read(
             cc_barrier();
 
             serialized_copy(&channel->hdr.wsc, &wsc);
+            serialized_copy((uint64_t *)&channel->misc.xon, &xon);
             if (wsc - reader->rc > reader->elements) {
                 result = MUCHANNEL_OVERRUN_DETECTED;
             } else {
                 result = MUCHANNEL_SUCCESS;
                 reader->rc++;
+                if (channel->misc.xon_enabled && !xon &&
+                    (wsc - reader->rc < ((20 * reader->elements) / 100))) {
+                    xon = 1;
+                    serialized_copy(&xon, (uint64_t *)&channel->misc.xon);
+                    result = MUCHANNEL_XON;
+                }
+                serialized_copy(&reader->rc, &channel->hdr.rc);
             }
             if (has_epoch_changed(channel, reader)) {
                 result = MUCHANNEL_EPOCH_CHANGED;

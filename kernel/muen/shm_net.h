@@ -18,26 +18,28 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef MUEN_CHANNEL_WRITER_H
-#define MUEN_CHANNEL_WRITER_H
-
+#include "../solo5.h"
 #include "channel.h"
+#include "reader.h"
 
-/**
- * Initialize channel with given parameters.
- */
-void muen_channel_init_writer(struct muchannel *channel, const uint64_t protocol,
-                  const uint64_t element_size, const uint64_t channel_size,
-                  const uint64_t epoch, const int xon_enabled);
+#define PACKET_SIZE   1514
+#define MUENNET_PROTO 0x7ade5c549b08e814ULL
 
-/**
- * Deactivate channel.
- */
-void muen_channel_deactivate(struct muchannel *channel);
+struct net_msg {
+    uint8_t data[PACKET_SIZE];
+    uint16_t length;
+} __attribute__((packed));
 
-/**
- * Write element to given channel.
- */
-int muen_channel_write(struct muchannel *channel, const void * const element);
+typedef enum {
+    SHM_NET_OK = 0,
+    SHM_NET_EPOCH_CHANGED,
+    SHM_NET_XON,
+    SHM_NET_AGAIN,
+    SHM_NET_EINVAL
+} shm_net_result_t;
 
-#endif
+shm_net_result_t shm_net_write(struct muchannel *channel,
+        const uint8_t *buf, size_t size);
+shm_net_result_t shm_net_read(struct muchannel *channel,
+        struct muchannel_reader *reader,
+        uint8_t *buf, size_t size, size_t *read_size);

@@ -40,13 +40,20 @@ struct muchannel_header {
     uint64_t protocol;
     uint64_t size;
     uint64_t elements;
-    uint64_t __reserved;
+    uint64_t rc;
     uint64_t wsc;
     uint64_t wc;
 } __attribute__((packed, aligned(8)));
 
+struct muchannel_misc {
+    uint8_t xon_enabled;
+    uint8_t xon;
+    uint8_t reserved[6];
+};
+
 struct muchannel {
     struct muchannel_header hdr;
+    struct muchannel_misc   misc;
     char data[];
 };
 

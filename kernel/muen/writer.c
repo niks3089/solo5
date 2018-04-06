@@ -19,26 +19,29 @@
  */
 
 #include "../kernel.h"
+#include "channel.h"
 #include "writer.h"
 #include "util.h"
 
 void muen_channel_init_writer(struct muchannel *channel, const uint64_t protocol,
                   const uint64_t element_size, const uint64_t channel_size,
-                  const uint64_t epoch)
+                  const uint64_t epoch, const int xon_enabled)
 {
     uint64_t data_size;
 
     muen_channel_deactivate(channel);
     memset(channel, 0, sizeof(struct muchannel));
-    data_size = channel_size - sizeof(struct muchannel_header);
+    data_size = channel_size - sizeof(struct muchannel_header) - sizeof(struct muchannel_misc);
     memset(channel->data, 0, data_size);
 
-    channel->hdr.transport = SHMSTREAM20;
-    channel->hdr.protocol  = protocol;
-    channel->hdr.size      = element_size;
-    channel->hdr.elements  = data_size / element_size;
-    channel->hdr.wsc       = 0;
-    channel->hdr.wc        = 0;
+    channel->hdr.transport    = SHMSTREAM20;
+    channel->hdr.protocol     = protocol;
+    channel->hdr.size         = element_size;
+    channel->hdr.elements     = data_size / element_size;
+    channel->hdr.wsc          = 0;
+    channel->hdr.wc           = 0;
+    channel->misc.xon_enabled = xon_enabled;
+    channel->misc.xon         = 1;
 
     serialized_copy(&epoch, &channel->hdr.epoch);
 }
@@ -49,17 +52,38 @@ void muen_channel_deactivate(struct muchannel *channel)
     cc_barrier();
 }
 
-void muen_channel_write(struct muchannel *channel, const void * const element)
+int muen_channel_write(struct muchannel *channel, const void * const element)
 {
-    uint64_t wc, pos, size;
+    uint64_t wc, pos, size, rc, xon = 0;
+    int xon_enabled = channel->misc.xon;
 
     size = channel->hdr.size;
     wc = channel->hdr.wc;
     pos = wc % channel->hdr.elements;
 
+    /* If Xon is not enabled, don't queue the
+     * packet. Just check if there are empty slots */
+    if (!xon_enabled) {
+        serialized_copy(&channel->hdr.rc, &rc);
+        if (wc - rc >= channel->hdr.elements) {
+            serialized_copy(&xon, (uint64_t *)&channel->misc.xon);
+            return -1;
+        }
+    }
     wc++;
-
     serialized_copy(&wc, &channel->hdr.wsc);
     memcpy(channel->data + pos * size, element, size);
     serialized_copy(&wc, &channel->hdr.wc);
+
+    if (xon_enabled) {
+        serialized_copy(&channel->hdr.rc, &rc);
+
+        /* Check if there are no more slots */
+        if (wc - rc >= channel->hdr.elements) {
+            serialized_copy(&xon, (uint64_t *)&channel->misc.xon);
+            return -1;
+        }
+    }
+
+    return 0;
 }

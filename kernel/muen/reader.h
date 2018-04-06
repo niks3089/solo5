@@ -29,6 +29,7 @@ enum muchannel_reader_result {
     MUCHANNEL_EPOCH_CHANGED,
     MUCHANNEL_NO_DATA,
     MUCHANNEL_OVERRUN_DETECTED,
+    MUCHANNEL_XON,
     MUCHANNEL_SUCCESS
 };
 
@@ -49,7 +50,7 @@ void muen_channel_init_reader(struct muchannel_reader *reader, uint64_t protocol
  * Read next element from given channel.
  */
 enum muchannel_reader_result muen_channel_read(
-        const struct muchannel * const channel,
+        struct muchannel *channel,
         struct muchannel_reader *reader,
         void *element);
 
