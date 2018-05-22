@@ -179,7 +179,7 @@ run_test ()
             STATUS=$?
             ;;
         esac
-        
+
         echo "-------- ${NAME} END (status ${STATUS}) --------"
         exit ${STATUS}
     )
@@ -196,14 +196,15 @@ run_test ()
     case ${NAME} in
     *.ukvm)
         case ${STATUS} in
-        0|255) 
+        0|255)
             if   [ -z "${WANT_ABORT}" ] && [ "${STATUS}" -eq "0" ]; then
                 STATUS=0
             elif [ -n "${WANT_ABORT}" ] && [ "${STATUS}" -eq "255" ]; then
                 STATUS=0
             elif [ -n "${WANT_COREDUMP}" ] && [ "${STATUS}" -eq "255" ]; then
                 CORE=`grep -o "core\.ukvm\.[0-9]*$" ${LOGS}`
-                [ -f "$CORE" ] && STATUS=0
+                grep -q "solo5_abort() called" ${LOGS} && STATUS=0
+                #[ -f "$CORE" ] && STATUS=0
                 [ -f "$CORE" ] && mv "$CORE" "$TMPDIR"
             else
                 STATUS=99
@@ -215,7 +216,7 @@ run_test ()
     *.virtio)
         case ${STATUS} in
         # XXX Should this be abstracted out in solo5-run-virtio.sh?
-        0|2|83) 
+        0|2|83)
             STATUS=99
             if [ "${WANT_ABORT}" ]; then
                 grep -q ABORT ${LOGS} && STATUS=0
