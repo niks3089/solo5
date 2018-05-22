@@ -202,7 +202,7 @@ run_test ()
             elif [ -n "${WANT_ABORT}" ] && [ "${STATUS}" -eq "255" ]; then
                 STATUS=0
             elif [ -n "${WANT_COREDUMP}" ] && [ "${STATUS}" -eq "255" ]; then
-                CORE=`grep -o "core\.ukvm\.[0-9]*$" ${LOGS}`
+                #CORE=`grep -o "core\.ukvm\.[0-9]*$" ${LOGS}`
                 grep -q "solo5_abort() called" ${LOGS} && STATUS=0
                 #[ -f "$CORE" ] && STATUS=0
                 #[ -f "$CORE" ] && mv "$CORE" "$TMPDIR"
