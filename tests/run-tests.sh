@@ -205,7 +205,7 @@ run_test ()
                 CORE=`grep -o "core\.ukvm\.[0-9]*$" ${LOGS}`
                 grep -q "solo5_abort() called" ${LOGS} && STATUS=0
                 #[ -f "$CORE" ] && STATUS=0
-                [ -f "$CORE" ] && mv "$CORE" "$TMPDIR"
+                #[ -f "$CORE" ] && mv "$CORE" "$TMPDIR"
             else
                 STATUS=99
             fi
