@@ -227,8 +227,20 @@ struct ukvm_blkread {
 
 /* UKVM_HYPERCALL_NETINFO */
 struct ukvm_netinfo {
+    /* IN */
+    int index;
+
     /* OUT */
     uint8_t mac_address[6];
+    int     ret;
+};
+
+struct ukvm_netindex {
+    /* IN */
+    uint8_t index;
+
+    /* OUT */
+    int ret;
 };
 
 /* UKVM_HYPERCALL_NET_SHM_INFO */
@@ -249,6 +261,7 @@ struct ukvm_net_shm_info {
 /* UKVM_HYPERCALL_NETWRITE */
 struct ukvm_netwrite {
     /* IN */
+    uint8_t index;
     UKVM_GUEST_PTR(const void *) data;
     size_t len;
 
@@ -259,6 +272,7 @@ struct ukvm_netwrite {
 /* UKVM_HYPERCALL_NETREAD */
 struct ukvm_netread {
     /* IN */
+    uint8_t index;
     UKVM_GUEST_PTR(void *) data;
 
     /* IN/OUT */
@@ -277,9 +291,12 @@ struct ukvm_netread {
 struct ukvm_poll {
     /* IN */
     uint64_t timeout_nsecs;
+    //UKVM_GUEST_PTR(void *) data;
+    int data[100];
 
     /* OUT */
     int ret;
+    size_t elems;
 };
 
 /*

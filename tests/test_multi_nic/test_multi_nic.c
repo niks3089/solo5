@@ -20,6 +20,7 @@
 
 #include "solo5.h"
 #include "../../kernel/lib.c"
+#define NUM_NICS 3
 
 static void puts(const char *s)
 {
@@ -123,13 +124,13 @@ static void tohexs(char *dst, uint8_t *src, size_t size)
     *dst = '\0';
 }
 
-uint8_t ipaddr[4] = { 0x0a, 0x00, 0x00, 0x02 }; /* 10.0.0.2 */
+uint8_t ipaddr[NUM_NICS][4];
 uint8_t ipaddr_brdnet[4] = { 0x0a, 0x00, 0x00, 0xff }; /* 10.0.0.255 */
 uint8_t ipaddr_brdall[4] = { 0xff, 0xff, 0xff, 0xff }; /* 255.255.255.255 */
-uint8_t macaddr[HLEN_ETHER];
+uint8_t macaddr[NUM_NICS][HLEN_ETHER];
 uint8_t macaddr_brd[HLEN_ETHER] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
-static int handle_arp(uint8_t *buf)
+static int handle_arp(int nic, uint8_t *buf)
 {
     struct arppkt *p = (struct arppkt *)buf;
 
@@ -145,14 +146,14 @@ static int handle_arp(uint8_t *buf)
     if (p->arp.op != htons(1))
         return 1;
 
-    if (memcmp(p->arp.tpa, ipaddr, PLEN_IPV4))
+    if (memcmp(p->arp.tpa, ipaddr[nic], PLEN_IPV4))
         return 1;
 
     /* reorder ether net header addresses */
     memcpy(p->ether.target, p->ether.source, HLEN_ETHER);
-    memcpy(p->ether.source, macaddr, HLEN_ETHER);
+    memcpy(p->ether.source, macaddr[nic], HLEN_ETHER);
     memcpy(p->arp.tha, p->arp.sha, HLEN_ETHER);
-    memcpy(p->arp.sha, macaddr, HLEN_ETHER);
+    memcpy(p->arp.sha, macaddr[nic], HLEN_ETHER);
 
     /* request -> reply */
     p->arp.op = htons(2);
@@ -161,12 +162,12 @@ static int handle_arp(uint8_t *buf)
     memcpy(p->arp.tpa, p->arp.spa, PLEN_IPV4);
 
     /* our ip -> spa */
-    memcpy(p->arp.spa, ipaddr, PLEN_IPV4);
+    memcpy(p->arp.spa, ipaddr[nic], PLEN_IPV4);
 
     return 0;
 }
 
-static int handle_ip(uint8_t *buf)
+static int handle_ip(int nic, uint8_t *buf)
 {
     struct pingpkt *p = (struct pingpkt *)buf;
 
@@ -179,7 +180,7 @@ static int handle_ip(uint8_t *buf)
     if (p->ip.proto != 0x01)
         return 1; /* not ICMP */
 
-    if (memcmp(p->ip.dst_ip, ipaddr, PLEN_IPV4) &&
+    if (memcmp(p->ip.dst_ip, ipaddr[nic], PLEN_IPV4) &&
         memcmp(p->ip.dst_ip, ipaddr_brdnet, PLEN_IPV4) &&
         memcmp(p->ip.dst_ip, ipaddr_brdall, PLEN_IPV4))
         return 1; /* not ip addressed to us */
@@ -192,14 +193,14 @@ static int handle_ip(uint8_t *buf)
 
     /* reorder ether net header addresses */
     memcpy(p->ether.target, p->ether.source, HLEN_ETHER);
-    memcpy(p->ether.source, macaddr, HLEN_ETHER);
+    memcpy(p->ether.source, macaddr[nic], HLEN_ETHER);
 
     p->ip.id = 0;
     p->ip.flags_offset = 0;
 
     /* reorder ip net header addresses */
     memcpy(p->ip.dst_ip, p->ip.src_ip, PLEN_IPV4);
-    memcpy(p->ip.src_ip, ipaddr, PLEN_IPV4);
+    memcpy(p->ip.src_ip, ipaddr[nic], PLEN_IPV4);
 
     /* recalculate ip checksum for return pkt */
     p->ip.checksum = 0;
@@ -214,7 +215,7 @@ static int handle_ip(uint8_t *buf)
     return 0;
 }
 
-static void send_garp(void)
+static void send_garp(int nic)
 {
     struct arppkt p;
     uint8_t zero[HLEN_ETHER] = { 0 };
@@ -222,7 +223,7 @@ static void send_garp(void)
     /*
      * Send a gratuitous ARP packet announcing our MAC address.
      */
-    memcpy(p.ether.source, macaddr, HLEN_ETHER);
+    memcpy(p.ether.source, macaddr[nic], HLEN_ETHER);
     memcpy(p.ether.target, macaddr_brd, HLEN_ETHER);
     p.ether.type = htons(ETHERTYPE_ARP);
     p.arp.htype = htons(1);
@@ -230,12 +231,12 @@ static void send_garp(void)
     p.arp.hlen = HLEN_ETHER;
     p.arp.plen = PLEN_IPV4;
     p.arp.op = htons(1);
-    memcpy(p.arp.sha, macaddr, HLEN_ETHER);
+    memcpy(p.arp.sha, macaddr[nic], HLEN_ETHER);
     memcpy(p.arp.tha, zero, HLEN_ETHER);
-    memcpy(p.arp.spa, ipaddr, PLEN_IPV4);
-    memcpy(p.arp.tpa, ipaddr, PLEN_IPV4);
+    memcpy(p.arp.spa, ipaddr[nic], PLEN_IPV4);
+    memcpy(p.arp.tpa, ipaddr[nic], PLEN_IPV4);
 
-    if (solo5_net_write(0, (uint8_t *)&p, sizeof p) != SOLO5_R_OK)
+    if (solo5_net_write(nic, (uint8_t *)&p, sizeof p) != SOLO5_R_OK)
         puts("Could not send GARP packet\n");
 }
 
@@ -244,22 +245,35 @@ static const solo5_time_t NSEC_PER_SEC = 1000000000ULL;
 static solo5_result_t ping_serve(int verbose, int limit)
 {
     unsigned long received = 0;
-    int ret = SOLO5_R_OK;
+    int ret = SOLO5_R_OK, nic;
+    size_t nic_ready_count, i;
+    int *nic_list = NULL;
+    struct solo5_yield_output nic_status = {0};
 
+    char macaddr_s[(sizeof HLEN_ETHER * 2) + 1];
+    char ipaddr_s[10];
+    char intf_s[4];
     struct solo5_net_info ni;
-    if ((ret = solo5_net_info(0, &ni)) != SOLO5_R_OK) {
-        puts("Failed to get network info\n");
-        return ret;
+
+    for (i = 0; i <  NUM_NICS; i++) {
+        if ((ret = solo5_net_info(i, &ni)) != SOLO5_R_OK) {
+            puts("Failed to get network info\n");
+            return ret;
+        }
+        memcpy(macaddr[i], ni.mac_address, HLEN_ETHER);
+
+        tohexs(macaddr_s, macaddr[i], HLEN_ETHER);
+        tohexs(ipaddr_s, ipaddr[i], 10);
+        puts("Serving ping on ");
+        puts(ipaddr_s);
+        puts(" with MAC: ");
+        puts(macaddr_s);
+        puts(" on NIC index:");
+        tohexs(intf_s, (uint8_t *)&i, 2);
+        puts(intf_s);
+        puts("\n");
+        send_garp(i);
     }
-    memcpy(macaddr, ni.mac_address, sizeof macaddr);
-
-    char macaddr_s[(sizeof macaddr * 2) + 1];
-    tohexs(macaddr_s, macaddr, sizeof macaddr);
-    puts("Serving ping on 10.0.0.2, with MAC: ");
-    puts(macaddr_s);
-    puts("\n");
-
-    send_garp();
 
     uint8_t buf[ni.mtu + SOLO5_NET_HLEN];
 
@@ -268,38 +282,61 @@ static solo5_result_t ping_serve(int verbose, int limit)
         size_t len;
 
         /* wait for packet */
-        while (solo5_net_read(0, buf, sizeof buf, &len) == SOLO5_R_AGAIN) {
-            solo5_yield(solo5_clock_monotonic() + NSEC_PER_SEC, NULL);
+        while (solo5_yield(solo5_clock_monotonic() + NSEC_PER_SEC, &nic_status) == 0) {
+            /* Timeout */
+            continue;
         }
 
-        if (memcmp(p->target, macaddr, HLEN_ETHER) &&
-            memcmp(p->target, macaddr_brd, HLEN_ETHER))
-            continue; /* not ether addressed to us */
+        nic_ready_count = nic_status.elems;
+        if (!nic_ready_count) {
+            puts("Woken up inadvertently\n");
+            goto out;
+        }
+        nic_list = (int *)nic_status.data;
 
-        switch (htons(p->type)) {
-            case ETHERTYPE_ARP:
-                if (handle_arp(buf) != 0)
-                    goto out;
-                if (verbose)
-                    puts("Received arp request, sending reply\n");
-                break;
-            case ETHERTYPE_IP:
-                if (handle_ip(buf) != 0)
-                    goto out;
-                if (verbose)
-                    puts("Received ping, sending reply\n");
-                break;
-            default:
-                goto out;
+        if (!nic_list) {
+            puts("NICs are ready to be read but don't know which one\n");
+            goto out;
         }
 
-        if (solo5_net_write(0, buf, len) != SOLO5_R_OK)
-            puts("Write error\n");
+        for(i = 0; i < nic_ready_count; i++)
+        {
+            nic = nic_list[i];
+            if (solo5_net_read(nic, buf, sizeof buf, &len) == SOLO5_R_AGAIN) {
+                continue;
+            }
+            if (memcmp(p->target, macaddr[nic], HLEN_ETHER) &&
+                memcmp(p->target, macaddr_brd, HLEN_ETHER)) {
+                continue; /* not ether addressed to us */
+            }
 
-        received++;
-        if (limit && received == 100000) {
-            puts("Limit reached, exiting\n");
-            break;
+            switch (htons(p->type)) {
+                case ETHERTYPE_ARP:
+                    if (verbose)
+                        puts("Received arp request, sending reply\n");
+                    if (handle_arp(nic, buf) != 0)
+                        goto out;
+                    break;
+                case ETHERTYPE_IP:
+                    if (verbose)
+                        puts("Received ping, sending reply\n");
+                    if (handle_ip(nic, buf) != 0)
+                        goto out;
+                    break;
+                default:
+                    puts("Not the expected packet\n");
+                    solo5_abort();
+                    goto out;
+            }
+
+            if (solo5_net_write(nic, buf, len) != SOLO5_R_OK)
+                puts("Write error\n");
+
+            received++;
+            if (limit && received == 100000) {
+                puts("Limit reached, exiting\n");
+                break;
+            }
         }
 
         continue;
@@ -312,10 +349,10 @@ out:
 
 int solo5_app_main(const struct solo5_start_info *si)
 {
-    int verbose = 0;
+    int verbose = 0, i;
     int limit = 0;
 
-    puts("\n**** Solo5 standalone test_ping_serve ****\n\n");
+    puts("\n**** Solo5 standalone Multi nic ping interface ****\n\n");
 
     if (strlen(si->cmdline) >= 1) {
         switch (si->cmdline[0]) {
@@ -330,6 +367,14 @@ int solo5_app_main(const struct solo5_start_info *si)
             puts("Usage: test_ping_serve [ verbose | limit ]\n");
             return SOLO5_EXIT_FAILURE;
         }
+    }
+
+    for(i = 0; i < NUM_NICS; i++)
+    {
+        ipaddr[i][0] = 0x0a;
+        ipaddr[i][1] = 0x00;
+        ipaddr[i][2] = i;
+        ipaddr[i][3] = 0x02;
     }
 
     if (ping_serve(verbose, limit) != SOLO5_R_OK) {

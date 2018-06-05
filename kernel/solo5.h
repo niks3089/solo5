@@ -145,18 +145,23 @@ solo5_time_t solo5_clock_monotonic(void);
  */
 solo5_time_t solo5_clock_wall(void);
 
+struct solo5_yield_output {
+    size_t elems;
+    void   *data;
+};
 /*
  * Suspends execution of the application until either:
  *
  *   a) monotonic time reaches (deadline), or
  *   b) solo5_net_read() would succeed.
  *
- * Returns true if solo5_net_read() will succeed, otherwise false.
+ * Returns NULL when reaches deadline
+ * Returns a pointer to an array of fds which are readable
  *
  * This interface may be extended in the future to allow for selection of I/O
  * events of interest to the application.
  */
-bool solo5_yield(solo5_time_t deadline);
+bool solo5_yield(solo5_time_t deadline, struct solo5_yield_output *out);
 
 /*
  * Console I/O.
@@ -190,6 +195,7 @@ void solo5_console_write(const char *buf, size_t size);
 
 struct solo5_net_info {
     uint8_t mac_address[SOLO5_NET_ALEN];
+    uint8_t index;              /* NIC index */
     size_t mtu;                 /* Not including Ethernet header */
 };
 
@@ -197,7 +203,7 @@ struct solo5_net_info {
  * Retrieves information about the network device. Caller must supply space for
  * struct solo5_net_info in (info).
  */
-void solo5_net_info(struct solo5_net_info *info);
+solo5_result_t solo5_net_info(int index, struct solo5_net_info *info);
 
 /*
  * Sends a single network packet from the buffer (*buf), without blocking.  If
@@ -207,7 +213,7 @@ void solo5_net_info(struct solo5_net_info *info);
  * The maximum allowed value for (size) is (solo5_net_info.mtu +
  * SOLO5_NET_HLEN). The packet must include the ethernet frame header.
  */
-solo5_result_t solo5_net_write(const uint8_t *buf, size_t size);
+solo5_result_t solo5_net_write(int index, const uint8_t *buf, size_t size);
 
 /*
  * Receives a single network packet into the buffer (*buf), without blocking.
@@ -218,7 +224,7 @@ solo5_result_t solo5_net_write(const uint8_t *buf, size_t size);
  * SOLO5_R_OK and the size of the received packet including the ethernet frame
  * header in (*read_size).
  */
-solo5_result_t solo5_net_read(uint8_t *buf, size_t size, size_t *read_size);
+solo5_result_t solo5_net_read(int index, uint8_t *buf, size_t size, size_t *read_size);
 
 /*
  * Block I/O.
@@ -276,7 +282,9 @@ solo5_result_t solo5_block_write(solo5_off_t offset, const uint8_t *buf,
  * single block.
  */
 solo5_result_t solo5_block_read(solo5_off_t offset, uint8_t *buf, size_t size);
-solo5_result_t solo5_net_queue(const uint8_t *buf, size_t size);
-void solo5_net_flush();
+solo5_result_t solo5_net_queue(int index, const uint8_t *buf, size_t size);
+
+/* Flushes data on that specified NIC */
+void solo5_net_flush(int index);
 
 #endif

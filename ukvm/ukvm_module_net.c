@@ -57,9 +57,6 @@
 #include "writer.h"
 #define MAXEVENTS 5
 static pthread_t tid;
-struct muchannel *tx_channel;
-struct muchannel *rx_channel;
-struct muchannel_reader net_rdr;
 
 #elif defined(__FreeBSD__)
 
@@ -79,10 +76,9 @@ struct muchannel_reader net_rdr;
 #include "ukvm.h"
 
 #define MAX_PACKETS_READ 100
-static char *netiface;
-static int netfd, solo5_rx_fd, solo5_tx_xon_fd, shm_rx_fd, shm_tx_fd, epoll_fd;
-static struct ukvm_netinfo netinfo;
-static int cmdline_mac = 0;
+static char *num_nics_str;
+static int num_nics;
+static int epoll_fd;
 static int use_shm_stream = 0;
 static int use_event_thread = 0;
 static uint64_t rx_shm_size = 0x0;
@@ -90,6 +86,31 @@ static uint64_t tx_shm_size = 0x0;
 struct timespec readtime;
 struct timespec writetime;
 struct timespec epochtime;
+
+#define FDS_PER_NIC 5
+typedef struct {
+    int                     index;
+    int                     netfd;
+    /* Eventfd to notify solo5 that pkt is ready to be read from shmstream */
+    int                     solo5_rx_fd;
+    /* Eventfd to notify solo5 that it its tx side is X'ONed and can start to queue packets */
+    int                     solo5_tx_xon_fd;
+    int                     shm_rx_fd;
+    int                     shm_tx_fd;
+    struct muchannel        *tx_channel;
+    struct muchannel        *rx_channel;
+    struct muchannel_reader net_rdr;
+    struct ukvm_netinfo     netinfo;
+} ukvm_netinfo_table;
+
+/* map between fds and the nic index it belongs to */
+typedef struct {
+    int    fd;
+    int    index;
+} ukvm_fd_index_map;
+
+static ukvm_netinfo_table *netinfo_table;
+static ukvm_fd_index_map  *fd_index_map;
 
 /*
  * Attach to an existing TAP interface named 'ifname'.
@@ -216,81 +237,116 @@ static int tap_attach(const char *ifname)
     return fd;
 }
 
+ukvm_fd_index_map *add_index_to_map(int fd, int nic_index)
+{
+    static int next = 0;
+
+    assert(next < FDS_PER_NIC * num_nics);
+
+    warnx("Associating %d fd to %d NIC index\n", fd, nic_index);
+    fd_index_map[next].fd = fd;
+    fd_index_map[next].index = nic_index;
+    return &fd_index_map[next++];
+}
+
+int netfd_notify_fn(void *data)
+{
+    ukvm_fd_index_map *map_entry = (ukvm_fd_index_map *)data;
+    return map_entry->index;
+}
+
 /* Solo5 is woken up when the shmstream is writable again */
-void read_solo5_tx_xon_fd()
+int read_solo5_tx_xon_fn(void *data)
 {
     uint64_t clear = 0;
-    if (read(solo5_tx_xon_fd, &clear, 8) < 0) {}
+    ukvm_fd_index_map *map_entry = (ukvm_fd_index_map *)data;
+
+    if (read(map_entry->fd, &clear, 8) < 0) {
+        return -1;
+    }
+    return map_entry->index;
 }
 
 /* Solo5 is woken up when there is data to be read from
  * shmstream */
-void read_solo5_rx_fd()
+int read_solo5_rx_fn(void *data)
 {
     uint64_t clear = 0;
+    ukvm_fd_index_map *map_entry = (ukvm_fd_index_map *)data;
 
     /* Clears the notification */
-    if (read(solo5_rx_fd, &clear, 8) < 0) {}
+    if (read(map_entry->fd, &clear, 8) < 0) {
+        return -1;
+    }
+    return map_entry->index;
 }
 
 void* io_event_loop()
 {
     struct net_msg pkt = { 0 };
-    int ret, n, i, er;
+    int ret, n, i, er, fd;
     uint64_t clear = 0, wrote = 1;
     struct epoll_event event;
     struct epoll_event *events;
     uint64_t packets_read = 0;
+    ukvm_netinfo_table *entry = NULL;
+    ukvm_fd_index_map  *map_entry = NULL;
 
     events = calloc(MAXEVENTS, sizeof event);
 
     while (1) {
         n = epoll_wait(epoll_fd, events, MAXEVENTS, -1);
         for (i = 0; i < n; i++) {
-			if ((events[i].events & EPOLLERR) ||
-				  (events[i].events & EPOLLHUP) ||
-				  (!(events[i].events & EPOLLIN)))
-			{
-			  warnx("epoll error\n");
-			  close(events[i].data.fd);
-			  continue;
-			} else if (netfd == events[i].data.fd) {
+            map_entry = events[i].data.ptr;
+            entry = &netinfo_table[map_entry->index];
+            fd    = map_entry->fd;
+            if ((events[i].events & EPOLLERR) ||
+                (events[i].events & EPOLLHUP) ||
+                (!(events[i].events & EPOLLIN)))
+            {
+              warnx("epoll error\n");
+              close(fd);
+              continue;
+            } else if (fd == entry->netfd) {
                 packets_read = 0;
                 while (packets_read < MAX_PACKETS_READ &&
-                    ((ret = read(netfd, pkt.data, PACKET_SIZE)) > 0)) {
-                    if (shm_net_write(tx_channel, pkt.data, ret) != SHM_NET_OK) {
+                    ((ret = read(entry->netfd,
+                        pkt.data, PACKET_SIZE)) > 0)) {
+                    if (shm_net_write(entry->tx_channel,
+                                pkt.data, ret) != SHM_NET_OK) {
                         /* Don't read from netfd. Instead, wait for tx_channel to
                          * be writable */
-                        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, netfd, NULL);
+                        epoll_ctl(epoll_fd, EPOLL_CTL_DEL,
+                                entry->netfd, NULL);
                         break;
                     }
                     packets_read++;
                 }
                 if (packets_read) {
-                    ret = write(solo5_rx_fd, &packets_read, 8);
+                    ret = write(entry->solo5_rx_fd, &packets_read, 8);
                 }
-            } else if (shm_tx_fd == events[i].data.fd) {
+            } else if (fd == entry->shm_tx_fd) {
                 /* tx channel is writable again */
                 warnx("tx shmstream is writable again");
-                if (read(shm_tx_fd, &clear, 8) < 0) {}
+                if (read(entry->shm_tx_fd, &clear, 8) < 0) {}
 
                 /* Start reading from netfd */
-                event.data.fd = netfd;
+                event.data.ptr = map_entry;
                 event.events = EPOLLIN;
-                epoll_ctl(epoll_fd, EPOLL_CTL_ADD, netfd, &event);
-            } else if (shm_rx_fd == events[i].data.fd) {
+                epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->netfd, &event);
+            } else if (fd == entry->shm_rx_fd) {
                 /* Read data from shmstream and write to tap interface */
                 do {
-                    ret = shm_net_read(rx_channel, &net_rdr,
+                    ret = shm_net_read( entry->rx_channel, &(entry->net_rdr),
                         pkt.data, PACKET_SIZE, (size_t *)&pkt.length);
                     if ((ret == SHM_NET_OK) || (ret == SHM_NET_XON)) {
                         if (ret == SHM_NET_XON) {
-                            er = write(solo5_tx_xon_fd, &wrote, 8);
+                            er = write(entry->solo5_tx_xon_fd, &wrote, 8);
                         }
-                        er = write(netfd, pkt.data, pkt.length);
+                        er = write(entry->netfd, pkt.data, pkt.length);
                         assert(er == pkt.length);
                     } else if (ret == SHM_NET_AGAIN) {
-                        if (read(shm_rx_fd, &clear, 8) < 0) {}
+                        if (read(entry->shm_rx_fd, &clear, 8) < 0) {}
                         break;
                     } else if (ret == SHM_NET_EPOCH_CHANGED) {
                         /* Don't clear the eventfd */
@@ -314,9 +370,9 @@ void* io_thread()
     while (1) {
         /* Read packets from tap interface and write to shmstream */
         while (packets_read < MAX_PACKETS_READ &&
-            ((ret = read(netfd, pkt.data, PACKET_SIZE)) > 0)) {
+            ((ret = read(netinfo_table[0].netfd, pkt.data, PACKET_SIZE)) > 0)) {
             packets_read++;
-            if (shm_net_write(tx_channel, pkt.data, ret) != SHM_NET_OK) {
+            if (shm_net_write(netinfo_table[0].tx_channel, pkt.data, ret) != SHM_NET_OK) {
                 ret = 0;
                 break;
             }
@@ -332,15 +388,16 @@ void* io_thread()
         }
         if (packets_read) {
             /* Notify the reader of shmstream */
-            ret = write(solo5_rx_fd, &packets_read, 8);
+            ret = write(netinfo_table[0].solo5_rx_fd, &packets_read, 8);
             packets_read = 0;
         }
 
         /* Read from shmstream and write to tap interface */
         while (packets_read < MAX_PACKETS_READ &&
-            (ret = shm_net_read(rx_channel, &net_rdr,
+            (ret = shm_net_read(netinfo_table[0].rx_channel,
+                    &netinfo_table[0].net_rdr,
             pkt.data, PACKET_SIZE, (size_t *)&pkt.length) == SHM_NET_OK)) {
-            ret = write(netfd, pkt.data, pkt.length);
+            ret = write(netinfo_table[0].netfd, pkt.data, pkt.length);
             packets_read++;
             assert(ret == pkt.length);
         }
@@ -369,7 +426,7 @@ static void hypercall_net_shm_info(struct ukvm_hv *hv, ukvm_gpa_t gpa)
 
     /* Start the thread */
     if (info->completed) {
-        muen_channel_init_reader(&net_rdr, MUENNET_PROTO);
+        //muen_channel_init_reader(&net_rdr, MUENNET_PROTO);
         if (use_event_thread) {
             pthread_create(&tid, NULL, &io_event_loop, NULL);
         } else {
@@ -394,7 +451,13 @@ static void hypercall_netinfo(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     struct ukvm_netinfo *info =
         UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netinfo));
 
-    memcpy(info->mac_address, netinfo.mac_address, sizeof(netinfo.mac_address));
+    if (info->index >= num_nics) {
+        info->ret = -1;
+    }
+
+    memcpy(info->mac_address, netinfo_table[info->index].netinfo.mac_address,
+            SOLO5_NET_ALEN);
+    info->ret = 0;
 }
 
 static void hypercall_netwrite(struct ukvm_hv *hv, ukvm_gpa_t gpa)
@@ -403,7 +466,10 @@ static void hypercall_netwrite(struct ukvm_hv *hv, ukvm_gpa_t gpa)
         UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netwrite));
     int ret;
 
-    ret = write(netfd, UKVM_CHECKED_GPA_P(hv, wr->data, wr->len), wr->len);
+    assert (wr->index < num_nics);
+
+    ret = write(netinfo_table[wr->index].netfd,
+            UKVM_CHECKED_GPA_P(hv, wr->data, wr->len), wr->len);
     assert(wr->len == ret);
     wr->ret = 0;
 }
@@ -414,7 +480,10 @@ static void hypercall_netread(struct ukvm_hv *hv, ukvm_gpa_t gpa)
         UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netread));
     int ret;
 
-    ret = read(netfd, UKVM_CHECKED_GPA_P(hv, rd->data, rd->len), rd->len);
+    assert (rd->index < num_nics);
+
+    ret = read(netinfo_table[rd->index].netfd,
+            UKVM_CHECKED_GPA_P(hv, rd->data, rd->len), rd->len);
     if ((ret == 0) ||
         (ret == -1 && errno == EAGAIN)) {
         rd->ret = -1;
@@ -427,33 +496,42 @@ static void hypercall_netread(struct ukvm_hv *hv, ukvm_gpa_t gpa)
 
 static void hypercall_netxon(struct ukvm_hv *hv, ukvm_gpa_t gpa)
 {
+    struct ukvm_netwrite *ni =
+        UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netindex));
+
+    if (ni->index >= num_nics) {
+        ni->ret = -1;
+        return;
+    }
+
     uint64_t xon = 1;
-    if (write(shm_tx_fd, &xon, 8)) {}
+    if (write(netinfo_table[ni->index].shm_tx_fd, &xon, 8)) {
+        warnx("Failed to write into shm tx fd at NIC:%d\n", ni->index);
+        ni->ret = -1;
+    } else {
+        ni->ret = 0;
+    }
 }
 
 static void hypercall_netnotify(struct ukvm_hv *hv, ukvm_gpa_t gpa)
 {
+    struct ukvm_netwrite *ni =
+        UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netindex));
+
+    if (ni->index >= num_nics) {
+        ni->ret = -1;
+        return;
+    }
+
     uint64_t read_data = 1;
-    if (write(shm_rx_fd, &read_data, 8)) {}
+    if (write(netinfo_table[ni->index].shm_rx_fd, &read_data, 8)) {}
+    ni->ret = 0;
 }
 
 static int handle_cmdarg(char *cmdarg)
 {
-    if (!strncmp("--net=", cmdarg, 6)) {
-        netiface = cmdarg + 6;
-        return 0;
-    } else if (!strncmp("--net-mac=", cmdarg, 10)) {
-        const char *macptr = cmdarg + 10;
-        uint8_t mac[6];
-        if (sscanf(macptr,
-                   "%02"SCNx8":%02"SCNx8":%02"SCNx8":"
-                   "%02"SCNx8":%02"SCNx8":%02"SCNx8,
-                   &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) != 6) {
-            warnx("Malformed mac address: %s", macptr);
-            return -1;
-        }
-        memcpy(netinfo.mac_address, mac, sizeof netinfo.mac_address);
-        cmdline_mac = 1;
+    if (!strncmp("--nic=", cmdarg, 6)) {
+        num_nics_str = cmdarg + 6;
         return 0;
     } else if (!strncmp("--shm=poll", cmdarg, 10)) {
         use_shm_stream = 1;
@@ -467,45 +545,40 @@ static int handle_cmdarg(char *cmdarg)
     }
 }
 
-static int configure_epoll()
+static int configure_epoll(ukvm_netinfo_table *entry)
 {
     struct epoll_event event;
 
-    if ((epoll_fd = epoll_create1(0)) < 0) {
-        warnx("Failed to create epoll fd");
-        return -1;
-    }
-
-    event.data.fd = netfd;
+    event.data.ptr = add_index_to_map(entry->netfd, entry->index);
     event.events = EPOLLIN;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, netfd, &event) < 0) {
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->netfd, &event) < 0) {
         warnx("Failed to set up fd at epoll_ctl");
         return -1;
     }
 
-    if ((shm_rx_fd = eventfd(0, EFD_NONBLOCK)) < 0) {
+    if ((entry->shm_rx_fd = eventfd(0, EFD_NONBLOCK)) < 0) {
         warnx("Failed to create eventfd");
         return -1;
     }
 
-    event.data.fd = shm_rx_fd;
+    event.data.ptr = add_index_to_map(entry->shm_rx_fd, entry->index);
     event.events = EPOLLIN;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, shm_rx_fd, &event) < 0) {
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->shm_rx_fd, &event) < 0) {
         warnx("Failed to set up fd at epoll_ctl");
         return -1;
     }
 
-    if ((shm_tx_fd = eventfd(0, EFD_NONBLOCK)) < 0) {
+    if ((entry->shm_tx_fd = eventfd(0, EFD_NONBLOCK)) < 0) {
         warnx("Failed to create eventfd");
         return -1;
     }
 
-    event.data.fd = shm_tx_fd;
+    event.data.ptr = add_index_to_map(entry->shm_tx_fd, entry->index);
     event.events = EPOLLIN;
-    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, shm_tx_fd, &event);
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->shm_tx_fd, &event);
 
-    solo5_tx_xon_fd = eventfd(0, EFD_NONBLOCK);
-    if (solo5_tx_xon_fd < 0) {
+    entry->solo5_tx_xon_fd = eventfd(0, EFD_NONBLOCK);
+    if (entry->solo5_tx_xon_fd < 0) {
         warnx("Failed to create eventfd");
         return -1;
     }
@@ -513,7 +586,7 @@ static int configure_epoll()
     return 0;
 }
 
-static int configure_shmstream(struct ukvm_hv *hv)
+static int configure_shmstream(struct ukvm_hv *hv, ukvm_netinfo_table *entry)
 {
     uint64_t offset = 0x0;
     uint8_t *shm_mem;
@@ -524,9 +597,13 @@ static int configure_shmstream(struct ukvm_hv *hv)
     tx_shm_size = 0x250000;//1000 * ring_buf_size;
     int ret;
 
+    if (!entry) {
+        goto err;
+    }
+
     /* Set up eventfd */
-    solo5_rx_fd = eventfd(0, EFD_NONBLOCK);
-    if (solo5_rx_fd < 0) {
+    entry->solo5_rx_fd = eventfd(0, EFD_NONBLOCK);
+    if (entry->solo5_rx_fd < 0) {
         err(1, "Failed to create eventfd");
         goto err;
     }
@@ -534,7 +611,7 @@ static int configure_shmstream(struct ukvm_hv *hv)
     if (use_event_thread) {
         /* Set up epoll */
         xon_enabled = 1;
-        if ((configure_epoll()) < 0) {
+        if ((configure_epoll(entry)) < 0) {
             err(1, "Failed to configure epoll");
             goto err;
         }
@@ -571,7 +648,7 @@ static int configure_shmstream(struct ukvm_hv *hv)
         err(1, "KVM: ioctl (SET_USER_MEMORY_REGION) failed: shmstream RX ring buffer");
         goto err;
     }
-    rx_channel = (struct muchannel *)(shm_mem + offset);
+    entry->rx_channel = (struct muchannel *)(shm_mem + offset);
     offset += rxring_region.memory_size;
 
     /* TX ring buffer */
@@ -588,14 +665,14 @@ static int configure_shmstream(struct ukvm_hv *hv)
     }
 
     /* Init tx ring as a writer */
-    tx_channel = (struct muchannel *)(shm_mem + offset);
+    entry->tx_channel = (struct muchannel *)(shm_mem + offset);
     /* TODO: Use monotonic epoch in kernel as well*/
     clock_gettime(CLOCK_MONOTONIC, &epochtime);
-    muen_channel_init_writer(tx_channel, MUENNET_PROTO, sizeof(struct net_msg),
+    muen_channel_init_writer(entry->tx_channel, MUENNET_PROTO, sizeof(struct net_msg),
             tx_shm_size, epochtime.tv_nsec, xon_enabled);
     offset += txring_region.memory_size;
 
-    printf("offset = 0x%"PRIx64", total_pagesize = 0x%"PRIx64"\n", offset, total_pagesize);
+    warnx("offset = 0x%"PRIx64", total_pagesize = 0x%"PRIx64"\n", offset, total_pagesize);
     ukvm_x86_add_pagetables(hv->mem, hv->mem_size, total_pagesize);
     return 0;
 
@@ -603,44 +680,102 @@ err:
     return -1;
 }
 
-static int setup(struct ukvm_hv *hv)
+static int configure_nics(struct ukvm_hv *hv)
 {
-    if (netiface == NULL)
-        return -1;
+    char intf[8];
+    int i, netfd, rfd, ret;
+    uint8_t guest_mac[6];
 
-    /* attach to requested tap interface */
-    netfd = tap_attach(netiface);
-    if (netfd < 0) {
-        err(1, "Could not attach interface: %s", netiface);
-        exit(1);
+    netinfo_table = (ukvm_netinfo_table *)calloc(1,
+            num_nics * sizeof(ukvm_netinfo_table));
+
+    if (!netinfo_table) {
+        warnx("Failed to create netinfo table");
+        return -1;
     }
 
-    if (!cmdline_mac) {
-        /* generate a random, locally-administered and unicast MAC address */
-        int rfd = open("/dev/urandom", O_RDONLY);
+    fd_index_map = (ukvm_fd_index_map *)calloc(1,
+            num_nics * FDS_PER_NIC * sizeof(ukvm_fd_index_map));
+
+    if (!fd_index_map) {
+        warnx("Failed to create fd index map");
+        return -1;
+    }
+
+    if (use_event_thread) {
+        if ((epoll_fd = epoll_create1(0)) < 0) {
+            warnx("Failed to create epoll fd");
+            return -1;
+        }
+    }
+
+    for (i = 0; i < num_nics; i++) {
+        snprintf(intf, sizeof intf, "tap%d", i + 100);
+        warnx("Creating interface %s\n", intf);
+        netfd = tap_attach(intf);
+        if (netfd < 0) {
+            err(1, "Could not attach interface: %s", intf);
+            exit(1);
+        }
+        netinfo_table[i].index = i;
+        netinfo_table[i].netfd = netfd;
+
+        rfd = open("/dev/urandom", O_RDONLY);
 
         if (rfd == -1)
             err(1, "Could not open /dev/urandom");
-
-        uint8_t guest_mac[6];
-        int ret;
 
         ret = read(rfd, guest_mac, sizeof(guest_mac));
         assert(ret == sizeof(guest_mac));
         close(rfd);
         guest_mac[0] &= 0xfe;
         guest_mac[0] |= 0x02;
-        memcpy(netinfo.mac_address, guest_mac, sizeof netinfo.mac_address);
-    }
+        memcpy(netinfo_table[i].netinfo.mac_address, guest_mac, SOLO5_NET_ALEN);
 
-    if (use_shm_stream) {
-        int flags = fcntl(netfd, F_GETFL, 0);
-        fcntl(netfd, F_SETFL, flags | O_NONBLOCK);
+        if (use_shm_stream) {
+            int flags = fcntl(netinfo_table[i].netfd, F_GETFL, 0);
+            fcntl(netinfo_table[i].netfd, F_SETFL, flags | O_NONBLOCK);
 
-        if (configure_shmstream(hv)) {
-            err(1, "Failed to configure shmstream");
-            exit(1);
+            if (configure_shmstream(hv, &netinfo_table[i])) {
+                err(1, "Failed to configure shmstream");
+                exit(1);
+            }
+            assert(ukvm_core_register_pollfd(netinfo_table[i].solo5_rx_fd,
+                    read_solo5_rx_fn,
+                    add_index_to_map(netinfo_table[i].solo5_rx_fd, i)) == 0);
+            if (use_event_thread) {
+                assert(ukvm_core_register_pollfd(netinfo_table[i].solo5_tx_xon_fd,
+                        read_solo5_tx_xon_fn,
+                        add_index_to_map(netinfo_table[i].solo5_tx_xon_fd, i)) == 0);
+            }
+        } else {
+            assert(ukvm_core_register_pollfd(netinfo_table[i].netfd,
+                    netfd_notify_fn,
+                    add_index_to_map(netinfo_table[i].netfd, i)) == 0);
         }
+    }
+    return 0;
+}
+
+static int setup(struct ukvm_hv *hv)
+{
+    if (num_nics_str == NULL)
+        return -1;
+
+    num_nics = strtoumax(num_nics_str, NULL, 10);
+
+    warnx("nic:number of nics is %d\n", num_nics);
+
+    if (num_nics == UINTMAX_MAX && errno == ERANGE) {
+        warnx("Invalid nic number\n");
+        return -1;
+    } else if (num_nics >= 10) {
+        warnx("Invalid nic range\n");
+        return -1;
+    }
+    if (configure_nics(hv) < 0) {
+        warnx("Failed to configure nics\n");
+        return -1;
     }
 
     assert(ukvm_core_register_hypercall(UKVM_HYPERCALL_NETINFO,
@@ -658,24 +793,14 @@ static int setup(struct ukvm_hv *hv)
                     hypercall_netnotify) == 0);
     }
 
-    /* If shmstream is used, register eventfd, else
-     * use tapfd */
-    if (use_shm_stream) {
-        assert(ukvm_core_register_pollfd(solo5_rx_fd, read_solo5_rx_fd) == 0);
-        if (use_event_thread) {
-            assert(ukvm_core_register_pollfd(solo5_tx_xon_fd, read_solo5_tx_xon_fd) == 0);
-        }
-    } else {
-        assert(ukvm_core_register_pollfd(netfd, NULL) == 0);
-    }
-
     return 0;
 }
 
 static char *usage(void)
 {
-    return "--net=TAP (host tap device for guest network interface or @NN tap fd)\n"
-        "    [ --net-mac=HWADDR ] (guest MAC address)";
+    return "--nic=number of NICs \n"
+           " --shm=poll for shared memory polling\n"
+           " --shm=event for shared memory event-driven\n";
 }
 
 static void cleanup(struct ukvm_hv *hv)

@@ -61,7 +61,8 @@ void time_init(void)
         assert(tscclock_init() == 0);
 }
 
-bool solo5_yield(solo5_time_t deadline)
+bool solo5_yield(uint64_t deadline,
+        struct solo5_yield_output *out __attribute__((unused)))
 {
     bool rc = false;
 

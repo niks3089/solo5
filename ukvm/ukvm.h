@@ -104,8 +104,8 @@ int ukvm_hv_vcpu_loop(struct ukvm_hv *hv);
 /*
  * Register the file descriptor (fd) for use with UKVM_HYPERCALL_POLL.
  */
-typedef void (*poll_fn_cb_t)();
-int ukvm_core_register_pollfd(int fd, poll_fn_cb_t cb);
+typedef int (*poll_fn_cb_t)(void *data);
+int ukvm_core_register_pollfd(int fd, poll_fn_cb_t cb, void *data);
 
 /*
  * Register (fn) as the handler for hypercall (nr).

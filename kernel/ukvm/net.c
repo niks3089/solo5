@@ -45,27 +45,34 @@ static inline solo5_result_t shm_to_solo5_result(int shm_result)
     return SOLO5_R_EUNSPEC;
 }
 
-solo5_result_t solo5_net_queue(const uint8_t *buf, size_t size)
+solo5_result_t solo5_net_queue(int index, const uint8_t *buf, size_t size)
 {
     int ret;
 
     assert(shm_event_enabled);
+    // Fix this: Use index to find the right channel
+    shm_event_enabled = index;
     ret = shm_net_write(tx_channel, buf, size);
     return shm_to_solo5_result(ret);
 }
 
-void solo5_net_flush()
+void solo5_net_flush(int index)
 {
+    volatile struct ukvm_netindex ni;
     assert(shm_event_enabled);
-    ukvm_do_hypercall(UKVM_HYPERCALL_NETNOTIFY, NULL);
+
+    ni.index = index;
+    ukvm_do_hypercall(UKVM_HYPERCALL_NETNOTIFY, &ni);
+
+    assert(ni.ret == 0);
 }
 
-solo5_result_t solo5_net_write(const uint8_t *buf, size_t size)
+solo5_result_t solo5_net_write(int index, const uint8_t *buf, size_t size)
 {
     int ret = 0;
     if (shm_event_enabled) {
-        ret = solo5_net_queue(buf, size);
-        solo5_net_flush();
+        ret = solo5_net_queue(index, buf, size);
+        solo5_net_flush(index);
         return ret;
     } else if (shm_poll_enabled) {
         ret = shm_net_write(tx_channel, buf, size);
@@ -73,6 +80,7 @@ solo5_result_t solo5_net_write(const uint8_t *buf, size_t size)
     } else {
         volatile struct ukvm_netwrite wr;
 
+        wr.index = index;
         wr.data = buf;
         wr.len = size;
         wr.ret = 0;
@@ -83,9 +91,10 @@ solo5_result_t solo5_net_write(const uint8_t *buf, size_t size)
     }
 }
 
-solo5_result_t solo5_net_read(uint8_t *buf, size_t size, size_t *read_size)
+solo5_result_t solo5_net_read(int index, uint8_t *buf, size_t size, size_t *read_size)
 {
     int ret = 0;
+    // Use index to retrieve rx_channel info
     if (shm_event_enabled) {
         ret = shm_net_read(rx_channel, &net_rdr,
                 buf, size, read_size);
@@ -101,6 +110,7 @@ solo5_result_t solo5_net_read(uint8_t *buf, size_t size, size_t *read_size)
     } else {
         volatile struct ukvm_netread rd;
 
+        rd.index = index;
         rd.data = buf;
         rd.len = size;
         rd.ret = 0;
@@ -112,16 +122,21 @@ solo5_result_t solo5_net_read(uint8_t *buf, size_t size, size_t *read_size)
     }
 }
 
-void solo5_net_info(struct solo5_net_info *info)
+solo5_result_t solo5_net_info(int index, struct solo5_net_info *info)
 {
     volatile struct ukvm_netinfo ni;
 
+    ni.index = index;
     ukvm_do_hypercall(UKVM_HYPERCALL_NETINFO, &ni);
 
-    memcpy(info->mac_address, (uint8_t *)&ni.mac_address,
-            sizeof info->mac_address);
-    /* XXX: No support on host side yet, so hardcode for now */
-    info->mtu = 1500;
+    if (ni.ret == 0) {
+        memcpy(info->mac_address, (uint8_t *)&ni.mac_address,
+                sizeof info->mac_address);
+        /* XXX: No support on host side yet, so hardcode for now */
+        info->mtu = 1500;
+        return SOLO5_R_OK;
+    }
+    return SOLO5_R_EINVAL;
 }
 
 void net_init(void)

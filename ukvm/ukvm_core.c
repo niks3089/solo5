@@ -1,4 +1,4 @@
-/* 
+/*
  * Copyright (c) 2015-2017 Contributors as noted in the AUTHORS file
  *
  * This file is part of ukvm, a unikernel monitor.
@@ -38,6 +38,7 @@
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/epoll.h>
 
 #include "ukvm.h"
 
@@ -149,15 +150,16 @@ static void hypercall_puts(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     assert(rc >= 0);
 }
 
-static struct pollfd pollfds[NUM_MODULES];
-static poll_fn_cb_t poll_fn_cb[NUM_MODULES];
+#if 0
+static struct pollfd pollfds[100];
+static poll_fn_cb_t poll_fn_cb[100];
 static int npollfds = 0;
-static sigset_t pollsigmask;
 
 int ukvm_core_register_pollfd(int fd, poll_fn_cb_t cb)
 {
-    if (npollfds == NUM_MODULES)
+    if (npollfds >= 100) {
         return -1;
+    }
 
     pollfds[npollfds].fd = fd;
     pollfds[npollfds].events = POLLIN;
@@ -185,11 +187,72 @@ static void hypercall_poll(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     if (rc) {
         for (i = 0; i < npollfds; i++) {
             if (poll_fn_cb[i] != NULL) {
-                poll_fn_cb[i]();
+                poll_fn_cb[i](pollfds[i].fd);
             }
         }
     }
     t->ret = rc;
+}
+#endif
+
+struct epoll_udata {
+    int          fd;
+    poll_fn_cb_t cb;
+    void         *data;
+};
+
+#define MAX_FDS 100
+static struct epoll_event *events;
+static int epoll_fd;
+static sigset_t pollsigmask;
+static struct epoll_udata edata[MAX_FDS];
+static int readable_dev[MAX_FDS];
+int ukvm_core_register_pollfd(int fd, poll_fn_cb_t cb, void *data)
+{
+    struct epoll_event event;
+    static int index = 0;
+
+    if (index >= MAX_FDS) {
+        return -1;
+    }
+
+    edata[index].fd = fd;
+    edata[index].cb = cb;
+    edata[index].data = data;
+
+    event.data.ptr = (void *)(&edata[index++]);
+    event.events = EPOLLIN;
+
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event) < 0) {
+        warnx("Failed to set up fd at epoll_ctl");
+        return -1;
+    }
+    return 0;
+}
+
+static void hypercall_epoll(struct ukvm_hv *hv, ukvm_gpa_t gpa)
+{
+    struct ukvm_poll *t =
+        UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_poll));
+    struct epoll_udata *event_u;
+    int rc, i, j = 0;
+
+    int ts = t->timeout_nsecs / 1000;
+    rc = epoll_wait(epoll_fd, events, MAX_FDS, ts);
+    assert(rc >= 0);
+
+    for (i = 0; i < rc; i++) {
+        event_u = events[i].data.ptr;
+        if (event_u->cb) {
+            readable_dev[j++] = event_u->cb(event_u->data);
+        }
+    }
+    readable_dev[j] = -1;
+    for (i = 0; i < j; i++) {
+        t->data[i]  = readable_dev[i];
+    }
+    t->elems = j;
+    t->ret   = rc;
 }
 
 static int setup(struct ukvm_hv *hv)
@@ -199,7 +262,7 @@ static int setup(struct ukvm_hv *hv)
     assert(ukvm_core_register_hypercall(UKVM_HYPERCALL_PUTS,
                 hypercall_puts) == 0);
     assert(ukvm_core_register_hypercall(UKVM_HYPERCALL_POLL,
-                hypercall_poll) == 0);
+                hypercall_epoll) == 0);
 
     /*
      * XXX: This needs documenting / coordination with the top-level caller.
@@ -207,6 +270,10 @@ static int setup(struct ukvm_hv *hv)
     sigfillset(&pollsigmask);
     sigdelset(&pollsigmask, SIGTERM);
     sigdelset(&pollsigmask, SIGINT);
+
+    /* Create epoll instance */
+    assert((epoll_fd = epoll_create1(0)) > 0);
+    events = calloc(MAX_FDS, sizeof(struct epoll_event));
 
     return 0;
 }

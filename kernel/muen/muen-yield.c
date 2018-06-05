@@ -21,7 +21,8 @@
 #include "../kernel.h"
 #include "muen-net.h"
 
-bool solo5_yield(uint64_t deadline)
+bool solo5_yield(uint64_t deadline,
+        struct solo5_yield_output *out __attribute__((unused)))
 {
     bool rc = false;
     do {

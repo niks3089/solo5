@@ -269,7 +269,8 @@ void virtio_net_recv_pkt_put(void)
     outw(virtio_net_pci_base + VIRTIO_PCI_QUEUE_NOTIFY, VIRTQ_RECV);
 }
 
-solo5_result_t solo5_net_write(const uint8_t *buf, size_t size)
+solo5_result_t solo5_net_write(int index __attribute__((unused)),
+        const uint8_t *buf, size_t size)
 {
     assert(net_configured);
 
@@ -277,7 +278,8 @@ solo5_result_t solo5_net_write(const uint8_t *buf, size_t size)
     return (rv == 0) ? SOLO5_R_OK : SOLO5_R_EUNSPEC;
 }
 
-solo5_result_t solo5_net_read(uint8_t *buf, size_t size, size_t *read_size)
+solo5_result_t solo5_net_read(int index __attribute__((unused)),
+        uint8_t *buf, size_t size, size_t *read_size)
 {
     uint8_t *pkt;
     size_t len = size;
@@ -313,10 +315,12 @@ solo5_result_t solo5_net_read(uint8_t *buf, size_t size, size_t *read_size)
     return SOLO5_R_OK;
 }
 
-void solo5_net_info(struct solo5_net_info *info)
+solo5_result_t solo5_net_info(int index __attribute__((unused)),
+        struct solo5_net_info *info)
 {
     assert(net_configured);
 
     memcpy(info->mac_address, virtio_net_mac, sizeof info->mac_address);
     info->mtu = 1500;
+    return SOLO5_R_OK;
 }

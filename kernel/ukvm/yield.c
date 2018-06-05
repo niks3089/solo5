@@ -20,7 +20,7 @@
 
 #include "kernel.h"
 
-bool solo5_yield(solo5_time_t deadline)
+bool solo5_yield(uint64_t deadline, struct solo5_yield_output *out)
 {
     struct ukvm_poll t;
     uint64_t now;
@@ -31,5 +31,10 @@ bool solo5_yield(solo5_time_t deadline)
     else
         t.timeout_nsecs = deadline - now;
     ukvm_do_hypercall(UKVM_HYPERCALL_POLL, &t);
+
+    if (out) {
+        out->data = t.data;
+        out->elems = t.elems;
+    }
     return t.ret;
 }

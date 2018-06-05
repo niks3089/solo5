@@ -28,12 +28,41 @@ if [ $(id -u) -ne 0 ]; then
     exit 1
 fi
 
+if [ "$#" -eq 0 ]; then
+    print "$#"
+    echo "Need to pass the number of NICs"
+	exit 1
+fi
+
+if [ $1 -ge 10 ]; then
+	echo "Number of nics cannot be greater than 10"
+	exit 1
+fi
+
+if [ $# -eq 2 -a "$2" != "del" ]; then
+    echo "Second argument needs to be del"
+    exit 1
+fi
+
 case `uname -s` in
 Linux)
-    set -xe
-    ip tuntap add tap100 mode tap
-    ip addr add 10.0.0.1/24 dev tap100
-    ip link set dev tap100 up
+    #set -xe
+    if [ "$#" -eq 2 ]; then
+        for var in $(seq 1 $1)
+        do
+            intf=$(expr "$var" - 1)
+            ip tuntap del tap10$intf mode tap
+        done
+        exit 1
+    fi
+    for var in $(seq 1 $1)
+    do
+        intf=$(expr "$var" - 1)
+		echo creating tap10$intf
+        ip tuntap add tap10$intf mode tap
+        ip addr add 10.0.$intf.1/24 dev tap10$intf
+        ip link set dev tap10$intf up
+    done
     ;;
 FreeBSD)
     kldload vmm
