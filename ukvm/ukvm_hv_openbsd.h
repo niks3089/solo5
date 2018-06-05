@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2015-2017 Contributors as noted in the AUTHORS file
  *
- * This file is part of Solo5, a unikernel base layer.
+ * This file is part of ukvm, a unikernel monitor.
  *
  * Permission to use, copy, modify, and/or distribute this software
  * for any purpose with or without fee is hereby granted, provided
@@ -18,20 +18,20 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include "kernel.h"
+/*
+ * ukvm_hv_openbsd.h: OpenBSD vmm(4) backend definitions.
+ */
 
-void platform_init(void *arg)
-{
-    process_bootinfo(arg);
-}
+#ifndef UKVM_HV_OPENBSD_H
+#define UKVM_HV_OPENBSD_H
 
-void platform_exit(int status, void *cookie)
-{
-    struct ukvm_halt h;
+#define VMM_NODE    "/dev/vmm"
+#define VMD_USER    "_vmd"
 
-    h.exit_status = status;
-    h.cookie = cookie;
+struct ukvm_hvb {
+    int      vmd_fd;
+    uint32_t vcp_id;
+    uint32_t vcpu_id;
+};
 
-    ukvm_do_hypercall(UKVM_HYPERCALL_HALT, &h);
-    for(;;);
-}
+#endif /* UKVM_HV_OPENBSD_H */
