@@ -237,7 +237,7 @@ static void hypercall_epoll(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     struct epoll_udata *event_u;
     int rc, i, j = 0;
 
-    int ts = t->timeout_nsecs / 1000;
+    int ts = t->timeout_nsecs / 1000000;
     rc = epoll_wait(epoll_fd, events, MAX_FDS, ts);
     assert(rc >= 0);
 

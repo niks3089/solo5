@@ -34,6 +34,7 @@
 #include <sys/mman.h>
 
 #include "ukvm.h"
+int ukvm_mem_region = 0;
 
 static void setup_cmdline(char *cmdline, int argc, char **argv)
 {

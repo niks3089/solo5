@@ -20,7 +20,7 @@
 
 #include "solo5.h"
 #include "../../kernel/lib.c"
-#define NUM_NICS 3
+#define NUM_NICS 1
 
 static void puts(const char *s)
 {
@@ -276,10 +276,10 @@ static solo5_result_t ping_serve(int verbose, int limit)
     }
 
     uint8_t buf[ni.mtu + SOLO5_NET_HLEN];
+    size_t len;
+    struct ether *p = (struct ether *)&buf;
 
     for (;;) {
-        struct ether *p = (struct ether *)&buf;
-        size_t len;
 
         /* wait for packet */
         while (solo5_yield(solo5_clock_monotonic() + NSEC_PER_SEC, &nic_status) == 0) {
@@ -302,30 +302,45 @@ static solo5_result_t ping_serve(int verbose, int limit)
         for(i = 0; i < nic_ready_count; i++)
         {
             nic = nic_list[i];
-            if (solo5_net_read(nic, buf, sizeof buf, &len) == SOLO5_R_AGAIN) {
+            if ((ret = solo5_net_read(nic, buf, sizeof buf, &len)) != SOLO5_R_OK) {
                 continue;
             }
+            p = (struct ether *)&buf;
+            puts("comparision: target:");
+            tohexs(macaddr_s, p->target, HLEN_ETHER);
+            puts(macaddr_s);
+            puts(" local:");
+            tohexs(macaddr_s, macaddr[nic], HLEN_ETHER);
+            puts(macaddr_s);
+            puts("\n");
             if (memcmp(p->target, macaddr[nic], HLEN_ETHER) &&
                 memcmp(p->target, macaddr_brd, HLEN_ETHER)) {
+                switch (htons(p->type)) {
+                    case ETHERTYPE_ARP:
+                        puts("Received arp request, sending reply\n");
+                        break;
+                    case ETHERTYPE_IP:
+                        break;
+                    default:
+                        puts("Not the expected packet\n");
+                }
                 continue; /* not ether addressed to us */
             }
 
             switch (htons(p->type)) {
                 case ETHERTYPE_ARP:
-                    if (verbose)
-                        puts("Received arp request, sending reply\n");
+                    puts("Received arp request, sending reply\n");
                     if (handle_arp(nic, buf) != 0)
                         goto out;
                     break;
                 case ETHERTYPE_IP:
-                    if (verbose)
-                        puts("Received ping, sending reply\n");
+                    puts("Received ping, sending reply\n");
                     if (handle_ip(nic, buf) != 0)
                         goto out;
                     break;
                 default:
-                    puts("Not the expected packet\n");
-                    solo5_abort();
+                    if (verbose)
+                        puts("Not the expected packet\n");
                     goto out;
             }
 

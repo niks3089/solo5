@@ -81,8 +81,8 @@ static int num_nics;
 static int epoll_fd;
 static int use_shm_stream = 0;
 static int use_event_thread = 0;
-static uint64_t rx_shm_size = 0x0;
-static uint64_t tx_shm_size = 0x0;
+static uint64_t rx_shm_size = 0x250000;//1000 * ring_buf_size;
+static uint64_t tx_shm_size = 0x250000;//1000 * ring_buf_size;
 struct timespec readtime;
 struct timespec writetime;
 struct timespec epochtime;
@@ -94,11 +94,13 @@ typedef struct {
     /* Eventfd to notify solo5 that pkt is ready to be read from shmstream */
     int                     solo5_rx_fd;
     /* Eventfd to notify solo5 that it its tx side is X'ONed and can start to queue packets */
-    int                     solo5_tx_xon_fd;
-    int                     shm_rx_fd;
-    int                     shm_tx_fd;
-    struct muchannel        *tx_channel;
+    int                     solo5_tx_xon_evfd;
+    int                     ukvm_rx_evfd;
+    int                     ukvm_tx_xon_evfd;
+    /* Tx channel addr can derived by adding the size of rx channel */
+    uint64_t                rx_channel_guest_addr;
     struct muchannel        *rx_channel;
+    struct muchannel        *tx_channel;
     struct muchannel_reader net_rdr;
     struct ukvm_netinfo     netinfo;
 } ukvm_netinfo_table;
@@ -295,7 +297,7 @@ void* io_event_loop()
     events = calloc(MAXEVENTS, sizeof event);
 
     while (1) {
-        n = epoll_wait(epoll_fd, events, MAXEVENTS, -1);
+        n = epoll_wait(epoll_fd, events, MAXEVENTS, 1);
         for (i = 0; i < n; i++) {
             map_entry = events[i].data.ptr;
             entry = &netinfo_table[map_entry->index];
@@ -316,6 +318,7 @@ void* io_event_loop()
                                 pkt.data, ret) != SHM_NET_OK) {
                         /* Don't read from netfd. Instead, wait for tx_channel to
                          * be writable */
+                        assert(0);
                         epoll_ctl(epoll_fd, EPOLL_CTL_DEL,
                                 entry->netfd, NULL);
                         break;
@@ -325,28 +328,28 @@ void* io_event_loop()
                 if (packets_read) {
                     ret = write(entry->solo5_rx_fd, &packets_read, 8);
                 }
-            } else if (fd == entry->shm_tx_fd) {
+            } else if (fd == entry->ukvm_tx_xon_evfd) {
                 /* tx channel is writable again */
                 warnx("tx shmstream is writable again");
-                if (read(entry->shm_tx_fd, &clear, 8) < 0) {}
+                if (read(entry->ukvm_tx_xon_evfd, &clear, 8) < 0) {}
 
                 /* Start reading from netfd */
                 event.data.ptr = map_entry;
                 event.events = EPOLLIN;
                 epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->netfd, &event);
-            } else if (fd == entry->shm_rx_fd) {
+            } else if (fd == entry->ukvm_rx_evfd) {
                 /* Read data from shmstream and write to tap interface */
                 do {
-                    ret = shm_net_read( entry->rx_channel, &(entry->net_rdr),
+                    ret = shm_net_read(entry->rx_channel, &(entry->net_rdr),
                         pkt.data, PACKET_SIZE, (size_t *)&pkt.length);
                     if ((ret == SHM_NET_OK) || (ret == SHM_NET_XON)) {
                         if (ret == SHM_NET_XON) {
-                            er = write(entry->solo5_tx_xon_fd, &wrote, 8);
+                            er = write(entry->solo5_tx_xon_evfd, &wrote, 8);
                         }
                         er = write(entry->netfd, pkt.data, pkt.length);
                         assert(er == pkt.length);
                     } else if (ret == SHM_NET_AGAIN) {
-                        if (read(entry->shm_rx_fd, &clear, 8) < 0) {}
+                        if (read(entry->ukvm_rx_evfd, &clear, 8) < 0) {}
                         break;
                     } else if (ret == SHM_NET_EPOCH_CHANGED) {
                         /* Don't clear the eventfd */
@@ -421,22 +424,20 @@ void* io_thread()
 
 static void hypercall_net_shm_info(struct ukvm_hv *hv, ukvm_gpa_t gpa)
 {
+    int i;
     struct ukvm_net_shm_info *info =
             UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_net_shm_info));
 
     /* Start the thread */
-    if (info->completed) {
-        //muen_channel_init_reader(&net_rdr, MUENNET_PROTO);
-        if (use_event_thread) {
-            pthread_create(&tid, NULL, &io_event_loop, NULL);
-        } else {
-            pthread_create(&tid, NULL, &io_thread, NULL);
+    if (use_shm_stream) {
+        for (i = 0; i < num_nics; i++) {
+            info->channel_info[i].tx_channel_addr =
+                netinfo_table[i].rx_channel_guest_addr;
+            info->channel_info[i].rx_channel_addr =
+                netinfo_table[i].rx_channel_guest_addr + rx_shm_size;
         }
-    } else if (use_shm_stream) {
-        info->tx_channel_addr = hv->mem_size;
+        info->num_nics = num_nics;
         info->tx_channel_addr_size = rx_shm_size;
-
-        info->rx_channel_addr = hv->mem_size + rx_shm_size;
         info->rx_channel_addr_size = tx_shm_size;
         if (use_event_thread) {
             info->shm_event_enabled = true;
@@ -505,7 +506,7 @@ static void hypercall_netxon(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     }
 
     uint64_t xon = 1;
-    if (write(netinfo_table[ni->index].shm_tx_fd, &xon, 8)) {
+    if (write(netinfo_table[ni->index].ukvm_tx_xon_evfd, &xon, 8)) {
         warnx("Failed to write into shm tx fd at NIC:%d\n", ni->index);
         ni->ret = -1;
     } else {
@@ -513,6 +514,7 @@ static void hypercall_netxon(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     }
 }
 
+/* Notify ukvm-bin that there is data to send */
 static void hypercall_netnotify(struct ukvm_hv *hv, ukvm_gpa_t gpa)
 {
     struct ukvm_netwrite *ni =
@@ -524,7 +526,7 @@ static void hypercall_netnotify(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     }
 
     uint64_t read_data = 1;
-    if (write(netinfo_table[ni->index].shm_rx_fd, &read_data, 8)) {}
+    if (write(netinfo_table[ni->index].ukvm_rx_evfd, &read_data, 8)) {}
     ni->ret = 0;
 }
 
@@ -556,29 +558,29 @@ static int configure_epoll(ukvm_netinfo_table *entry)
         return -1;
     }
 
-    if ((entry->shm_rx_fd = eventfd(0, EFD_NONBLOCK)) < 0) {
+    if ((entry->ukvm_rx_evfd = eventfd(0, EFD_NONBLOCK)) < 0) {
         warnx("Failed to create eventfd");
         return -1;
     }
 
-    event.data.ptr = add_index_to_map(entry->shm_rx_fd, entry->index);
+    event.data.ptr = add_index_to_map(entry->ukvm_rx_evfd, entry->index);
     event.events = EPOLLIN;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->shm_rx_fd, &event) < 0) {
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->ukvm_rx_evfd, &event) < 0) {
         warnx("Failed to set up fd at epoll_ctl");
         return -1;
     }
 
-    if ((entry->shm_tx_fd = eventfd(0, EFD_NONBLOCK)) < 0) {
+    if ((entry->ukvm_tx_xon_evfd = eventfd(0, EFD_NONBLOCK)) < 0) {
         warnx("Failed to create eventfd");
         return -1;
     }
 
-    event.data.ptr = add_index_to_map(entry->shm_tx_fd, entry->index);
+    event.data.ptr = add_index_to_map(entry->ukvm_tx_xon_evfd, entry->index);
     event.events = EPOLLIN;
-    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->shm_tx_fd, &event);
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->ukvm_tx_xon_evfd, &event);
 
-    entry->solo5_tx_xon_fd = eventfd(0, EFD_NONBLOCK);
-    if (entry->solo5_tx_xon_fd < 0) {
+    entry->solo5_tx_xon_evfd = eventfd(0, EFD_NONBLOCK);
+    if (entry->solo5_tx_xon_evfd < 0) {
         warnx("Failed to create eventfd");
         return -1;
     }
@@ -586,60 +588,54 @@ static int configure_epoll(ukvm_netinfo_table *entry)
     return 0;
 }
 
-static int configure_shmstream(struct ukvm_hv *hv, ukvm_netinfo_table *entry)
+static int configure_shmstream_events(struct ukvm_hv *hv, ukvm_netinfo_table *entry)
 {
-    uint64_t offset = 0x0;
-    uint8_t *shm_mem;
-    uint64_t total_pagesize = 0x0;
-    int xon_enabled = 0;
-    //size_t ring_buf_size = sizeof(struct net_msg);
-    rx_shm_size = 0x250000;//1000 * ring_buf_size;
-    tx_shm_size = 0x250000;//1000 * ring_buf_size;
-    int ret;
-
     if (!entry) {
-        goto err;
+        return -1;
     }
 
     /* Set up eventfd */
-    entry->solo5_rx_fd = eventfd(0, EFD_NONBLOCK);
+    /* Why do we set it to sempahore?
+     * We've 2 options. Consider a case where 10 packets are received
+     * on a tap device and queued in shm. ukvm notifies solo5 via the
+     * solo5_rx_fd and during this notification, the solo5_rx_fd is cleared.
+     * The application will need to read to completion using solo5_read()
+     * before going to yield since if it doesn't complete the reading, it will
+     * not be notified again via yield. It could opt to pass 0 as timeout to
+     * yield to finish reading but the application will need to keep track of it
+     *
+     * Setting it as semaphore will enforce the application to read once before
+     * going back to yield to be woken up immediately. So if there are 10 packets
+     * to be read, we will need to call yield and read 10 times which could be expensive.
+     *
+     * It depends on the application and this can set during initalisation or something.
+     */
+    entry->solo5_rx_fd = eventfd(0, EFD_NONBLOCK);// | EFD_SEMAPHORE);
     if (entry->solo5_rx_fd < 0) {
         err(1, "Failed to create eventfd");
-        goto err;
+        return -1;
     }
 
     if (use_event_thread) {
         /* Set up epoll */
-        xon_enabled = 1;
         if ((configure_epoll(entry)) < 0) {
             err(1, "Failed to configure epoll");
-            goto err;
+            return -1;
         }
     }
+    return 0;
+}
 
-    /* Find out additional memory required to configure shm */
-    uint64_t total_shm_buf_size = rx_shm_size + tx_shm_size;
-
-    shm_mem = mmap(NULL, total_shm_buf_size, PROT_READ | PROT_WRITE,
-               MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (shm_mem == MAP_FAILED) {
-        err(1, "Failed allocate memory for shmstream");
-        goto err;
-    }
-
-    do {
-        total_pagesize += X86_GUEST_PAGE_SIZE;
-    } while(total_pagesize < total_shm_buf_size);
-
-    if ((hv->mem_size + total_shm_buf_size) > (X86_GUEST_PAGE_SIZE * 512)) {
-        err(1, "guest memory size exceeds the max size %u bytes", X86_GUEST_PAGE_SIZE * 512);
-        goto err;
-    }
+static int configure_shmstream_mem(struct ukvm_hv *hv, ukvm_netinfo_table *entry,
+        uint8_t *shm_mem)
+{
+    static uint64_t offset;
+    int ret;
 
     /* RX ring buffer */
     struct kvm_userspace_memory_region rxring_region = {
-        .slot = UKVM_SHMSTREAM_RXRING_BUF_REGION,
-        .guest_phys_addr = hv->mem_size + offset,
+        .slot = ukvm_mem_region++,
+        .guest_phys_addr = hv->mem_size + (offset),
         .memory_size = (uint64_t)(rx_shm_size),
         .userspace_addr = (uint64_t)(shm_mem + offset),
     };
@@ -648,13 +644,14 @@ static int configure_shmstream(struct ukvm_hv *hv, ukvm_netinfo_table *entry)
         err(1, "KVM: ioctl (SET_USER_MEMORY_REGION) failed: shmstream RX ring buffer");
         goto err;
     }
+    entry->rx_channel_guest_addr = hv->mem_size + (offset);
     entry->rx_channel = (struct muchannel *)(shm_mem + offset);
     offset += rxring_region.memory_size;
 
     /* TX ring buffer */
     struct kvm_userspace_memory_region txring_region = {
-        .slot = UKVM_SHMSTREAM_TXRING_BUF_REGION,
-        .guest_phys_addr = hv->mem_size + offset,
+        .slot = ukvm_mem_region++,
+        .guest_phys_addr = hv->mem_size + (offset),
         .memory_size = (uint64_t)(tx_shm_size),
         .userspace_addr = (uint64_t)(shm_mem + offset),
     };
@@ -669,11 +666,11 @@ static int configure_shmstream(struct ukvm_hv *hv, ukvm_netinfo_table *entry)
     /* TODO: Use monotonic epoch in kernel as well*/
     clock_gettime(CLOCK_MONOTONIC, &epochtime);
     muen_channel_init_writer(entry->tx_channel, MUENNET_PROTO, sizeof(struct net_msg),
-            tx_shm_size, epochtime.tv_nsec, xon_enabled);
+            tx_shm_size, epochtime.tv_nsec, use_event_thread);
     offset += txring_region.memory_size;
 
-    warnx("offset = 0x%"PRIx64", total_pagesize = 0x%"PRIx64"\n", offset, total_pagesize);
-    ukvm_x86_add_pagetables(hv->mem, hv->mem_size, total_pagesize);
+    muen_channel_init_reader(&entry->net_rdr, MUENNET_PROTO);
+
     return 0;
 
 err:
@@ -685,6 +682,7 @@ static int configure_nics(struct ukvm_hv *hv)
     char intf[8];
     int i, netfd, rfd, ret;
     uint8_t guest_mac[6];
+    uint8_t *shm_mem = NULL;
 
     netinfo_table = (ukvm_netinfo_table *)calloc(1,
             num_nics * sizeof(ukvm_netinfo_table));
@@ -709,7 +707,33 @@ static int configure_nics(struct ukvm_hv *hv)
         }
     }
 
+    if (use_shm_stream) {
+        uint64_t total_shm_buf_size = (rx_shm_size + tx_shm_size) * num_nics;
+        uint64_t total_pagesize = 0x0;
+
+        if ((hv->mem_size + total_shm_buf_size) > (X86_GUEST_PAGE_SIZE * 512)) {
+            err(1, "guest memory size exceeds the max size %u bytes", X86_GUEST_PAGE_SIZE * 512);
+            return -1;
+        }
+
+        shm_mem = mmap(NULL, total_shm_buf_size, PROT_READ | PROT_WRITE,
+                   MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        if (shm_mem == MAP_FAILED) {
+            err(1, "Failed allocate memory for shmstream");
+            return -1;
+        }
+
+        do {
+            total_pagesize += X86_GUEST_PAGE_SIZE;
+        } while(total_pagesize < total_shm_buf_size);
+
+
+        warnx("total_pagesize = 0x%"PRIx64"\n",total_pagesize);
+        ukvm_x86_add_pagetables(hv->mem, hv->mem_size, total_pagesize);
+    }
+
     for (i = 0; i < num_nics; i++) {
+
         snprintf(intf, sizeof intf, "tap%d", i + 100);
         warnx("Creating interface %s\n", intf);
         netfd = tap_attach(intf);
@@ -736,22 +760,42 @@ static int configure_nics(struct ukvm_hv *hv)
             int flags = fcntl(netinfo_table[i].netfd, F_GETFL, 0);
             fcntl(netinfo_table[i].netfd, F_SETFL, flags | O_NONBLOCK);
 
-            if (configure_shmstream(hv, &netinfo_table[i])) {
-                err(1, "Failed to configure shmstream");
+            if (configure_shmstream_events(hv, &netinfo_table[i])) {
+                err(1, "Failed to configure shmstream events");
                 exit(1);
             }
+
+            if (configure_shmstream_mem(hv, &netinfo_table[i], shm_mem)) {
+                err(1, "Failed to configure shmstream memory");
+                exit(1);
+            }
+
             assert(ukvm_core_register_pollfd(netinfo_table[i].solo5_rx_fd,
                     read_solo5_rx_fn,
                     add_index_to_map(netinfo_table[i].solo5_rx_fd, i)) == 0);
             if (use_event_thread) {
-                assert(ukvm_core_register_pollfd(netinfo_table[i].solo5_tx_xon_fd,
+                assert(ukvm_core_register_pollfd(netinfo_table[i].solo5_tx_xon_evfd,
                         read_solo5_tx_xon_fn,
-                        add_index_to_map(netinfo_table[i].solo5_tx_xon_fd, i)) == 0);
+                        add_index_to_map(netinfo_table[i].solo5_tx_xon_evfd, i)) == 0);
             }
         } else {
             assert(ukvm_core_register_pollfd(netinfo_table[i].netfd,
                     netfd_notify_fn,
                     add_index_to_map(netinfo_table[i].netfd, i)) == 0);
+        }
+    }
+
+    if (use_shm_stream) {
+        if (use_event_thread) {
+            if (pthread_create(&tid, NULL, &io_event_loop, NULL) != 0) {
+                warnx("Failed to create event thread");
+                return -1;
+            }
+        } else {
+            if (pthread_create(&tid, NULL, &io_thread, NULL) != 0) {
+                warnx("Failed to create polling thread");
+                return -1;
+            }
         }
     }
     return 0;

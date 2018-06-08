@@ -24,9 +24,14 @@
 #include "reader.h"
 #include "writer.h"
 
-struct muchannel *tx_channel;
-struct muchannel *rx_channel;
-struct muchannel_reader net_rdr;
+typedef struct {
+    struct muchannel        *tx_channel;
+    struct muchannel        *rx_channel;
+    struct muchannel_reader net_rdr;
+} muchannel_info;
+
+static muchannel_info channel_info[100];
+
 bool shm_poll_enabled  = false;
 bool shm_event_enabled = false;
 
@@ -50,9 +55,7 @@ solo5_result_t solo5_net_queue(int index, const uint8_t *buf, size_t size)
     int ret;
 
     assert(shm_event_enabled);
-    // Fix this: Use index to find the right channel
-    shm_event_enabled = index;
-    ret = shm_net_write(tx_channel, buf, size);
+    ret = shm_net_write(channel_info[index].tx_channel, buf, size);
     return shm_to_solo5_result(ret);
 }
 
@@ -75,7 +78,7 @@ solo5_result_t solo5_net_write(int index, const uint8_t *buf, size_t size)
         solo5_net_flush(index);
         return ret;
     } else if (shm_poll_enabled) {
-        ret = shm_net_write(tx_channel, buf, size);
+        ret = shm_net_write(channel_info[index].tx_channel, buf, size);
         return shm_to_solo5_result(ret);
     } else {
         volatile struct ukvm_netwrite wr;
@@ -96,16 +99,20 @@ solo5_result_t solo5_net_read(int index, uint8_t *buf, size_t size, size_t *read
     int ret = 0;
     // Use index to retrieve rx_channel info
     if (shm_event_enabled) {
-        ret = shm_net_read(rx_channel, &net_rdr,
+        ret = shm_net_read(channel_info[index].rx_channel,
+                &(channel_info[index].net_rdr),
                 buf, size, read_size);
 
         if (ret == SHM_NET_XON) {
-            ukvm_do_hypercall(UKVM_HYPERCALL_NETXON, NULL);
+            volatile struct ukvm_netindex ni;
+            ni.index = index;
+            ukvm_do_hypercall(UKVM_HYPERCALL_NETXON, &ni);
         }
         return shm_to_solo5_result(ret);
     } else if (shm_poll_enabled) {
-       ret = shm_net_read(rx_channel, &net_rdr,
-                buf, size, read_size);
+       ret = shm_net_read(channel_info[index].rx_channel,
+               &(channel_info[index].net_rdr),
+               buf, size, read_size);
         return shm_to_solo5_result(ret);
     } else {
         volatile struct ukvm_netread rd;
@@ -144,19 +151,22 @@ void net_init(void)
     volatile struct ukvm_net_shm_info ni = { 0 };
     ukvm_do_hypercall(UKVM_HYPERCALL_NET_SHMINFO, &ni);
     int xon_enabled = 0;
+    int i;
 
     shm_poll_enabled = ni.shm_poll_enabled;
     shm_event_enabled = (xon_enabled = ni.shm_event_enabled);
 
     if (shm_poll_enabled || shm_event_enabled) {
-        tx_channel = (struct muchannel *)ni.tx_channel_addr;
-        rx_channel = (struct muchannel *)ni.rx_channel_addr;
+        for (i = 0; i < ni.num_nics; i++) {
+            channel_info[i].tx_channel =
+                (struct muchannel *)ni.channel_info[i].tx_channel_addr;
+            channel_info[i].rx_channel =
+                (struct muchannel *)ni.channel_info[i].rx_channel_addr;
 
-        muen_channel_init_writer(tx_channel, MUENNET_PROTO, sizeof(struct net_msg),
-                ni.tx_channel_addr_size, 10, xon_enabled);
-        muen_channel_init_reader(&net_rdr, MUENNET_PROTO);
-
-        ni.completed = 1;
-        ukvm_do_hypercall(UKVM_HYPERCALL_NET_SHMINFO, &ni);
+            muen_channel_init_writer(channel_info[i].tx_channel,
+                    MUENNET_PROTO, sizeof(struct net_msg),
+                    ni.tx_channel_addr_size, 10, xon_enabled);
+            muen_channel_init_reader(&(channel_info[i].net_rdr), MUENNET_PROTO);
+        }
     }
 }

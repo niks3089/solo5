@@ -37,6 +37,11 @@
 #include "ukvm_gdb.h"
 
 /*
+ *  Global memory region for kvm slots.
+ */
+extern int ukvm_mem_region;
+
+/*
  * Hypervisor {arch,backend}-independent data is defined here.
  * {arch,backend}-dependent data (b) is defined in ukvm_hv_{backend}.h.
  */

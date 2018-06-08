@@ -244,17 +244,21 @@ struct ukvm_netindex {
 };
 
 /* UKVM_HYPERCALL_NET_SHM_INFO */
+struct ukvm_net_channel {
+    uint64_t tx_channel_addr;
+    uint64_t rx_channel_addr;
+};
+
 struct ukvm_net_shm_info {
     /* IN */
-    uint64_t tx_channel_addr;
-    uint64_t tx_channel_addr_size;
-    uint64_t rx_channel_addr;
-    uint64_t rx_channel_addr_size;
-    int      shm_poll_enabled;
-    int      shm_event_enabled;
-    int      completed;
 
     /* OUT */
+    int      num_nics;
+    int      shm_poll_enabled;
+    int      shm_event_enabled;
+    uint64_t tx_channel_addr_size;
+    uint64_t rx_channel_addr_size;
+    struct ukvm_net_channel channel_info[100];
     int ret;
 };
 
@@ -318,14 +322,4 @@ struct ukvm_halt {
     /* IN */
     int exit_status;
 };
-
-/*
- * Canonical list of host memory regions mapped as the guest memory
- */
-enum ukvm_memregion {
-    UKVM_MEMCORE_REGION,
-    UKVM_SHMSTREAM_RXRING_BUF_REGION,
-    UKVM_SHMSTREAM_TXRING_BUF_REGION,
-};
-
 #endif /* UKVM_GUEST_H */
