@@ -64,6 +64,7 @@
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include "ukvm.h"
+#include "ukvm_module_net.h"
 
 static bool use_dpdk = false;
 
@@ -212,6 +213,34 @@ l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
 		port_statistics[dst_port].tx += sent;
 }
 
+static void
+l2fwd_sendto_shm(struct rte_mbuf *m, unsigned portid)
+{
+    struct net_msg pkt;
+
+    /* Construct net_msg packet and write to shm stream */ 
+    pkt.data = rte_pktmbuf_mtod(m, uint8_t*);
+    pkt.length = rte_pktmbuf_data_len(m);
+
+    ukvm_net_write(&pkt, portid);
+}
+
+static void
+l2fwd_readfrom_shm()
+{
+    struct net_msg pkt;
+    struct rte_mbuf *m;
+
+    ukvm_net_read(&pkt);
+    m = rte_pktmbuf_alloc(l2fwd_pktmbuf_pool);
+    assert(m);
+
+    m->data_len = pkt.length;
+    m->pkt_len = pkt.length;
+    rte_pktmbuf_mtod(m, void *) = pkt.data; 
+    l2fwd_simple_forward(m, 0);
+}
+
 /* main processing loop */
 static void
 l2fwd_main_loop(void)
@@ -291,7 +320,7 @@ l2fwd_main_loop(void)
 		}
 
 		/*
-		 * Read packet from RX queues
+		 * Read packet from RX queues and write it to shm
 		 */
 		for (i = 0; i < qconf->n_rx_port; i++) {
 
@@ -304,9 +333,11 @@ l2fwd_main_loop(void)
 			for (j = 0; j < nb_rx; j++) {
 				m = pkts_burst[j];
 				rte_prefetch0(rte_pktmbuf_mtod(m, void *));
-				l2fwd_simple_forward(m, portid);
+                l2fwd_sendto_shm(m, portid);
 			}
 		}
+
+        l2fwd_readfrom_shm();
 	}
 }
 

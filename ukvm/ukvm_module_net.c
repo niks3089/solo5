@@ -398,8 +398,8 @@ void* io_thread()
         /* Read from shmstream and write to tap interface */
         while (packets_read < MAX_PACKETS_READ &&
             (ret = shm_net_read(netinfo_table[0].rx_channel,
-                    &netinfo_table[0].net_rdr,
-            pkt.data, PACKET_SIZE, (size_t *)&pkt.length) == SHM_NET_OK)) {
+                    &netinfo_table[0].net_rdr, pkt.data, PACKET_SIZE, 
+                    (size_t *)&pkt.length) == SHM_NET_OK)) {
             ret = write(netinfo_table[0].netfd, pkt.data, pkt.length);
             packets_read++;
             assert(ret == pkt.length);
