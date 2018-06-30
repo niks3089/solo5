@@ -19,6 +19,6 @@
 UKVM_TARGETS=test_dpdk.ukvm ukvm-bin
 VIRTIO_TARGETS=test_dpdk.virtio
 MUEN_TARGETS=test_dpdk.muen
-UKVM_MODULES=dpdk
+UKVM_MODULES=net dpdk
 
 include ../Makefile.tests

@@ -37,24 +37,13 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "ukvm_module_net.h"
+
 #if defined(__linux__)
 
 /*
  * Linux TAP device specific.
  */
-#include <sys/socket.h>
-#include <linux/if.h>
-#include <linux/if_tun.h>
-#include <linux/kvm.h>
-#include <pthread.h>
-#include <sys/eventfd.h>
-#include <sys/epoll.h>
-#include "ukvm.h"
-#include "ukvm_guest.h"
-#include "ukvm_hv_kvm.h"
-#include "ukvm_cpu_x86_64.h"
-#include "shm_net.h"
-#include "writer.h"
 #define MAXEVENTS 5
 static pthread_t tid;
 
@@ -113,6 +102,32 @@ typedef struct {
 
 static ukvm_netinfo_table *netinfo_table;
 static ukvm_fd_index_map  *fd_index_map;
+
+int ukvm_net_write(uint8_t nic_index, const uint8_t *buf, size_t len)
+{
+    if (nic_index >= num_nics || !buf || !len) {
+        return -1;
+    }
+    if (shm_net_write(netinfo_table[nic_index].tx_channel, buf,
+          len) != SHM_NET_OK) {
+      return -1;
+    }
+    return 0;
+}
+
+int ukvm_net_read(uint8_t nic_index, struct net_msg *pkt)
+{
+    if (nic_index >= num_nics || !pkt || !pkt->length) {
+        return -1;
+    }
+    if (shm_net_read(netinfo_table[nic_index].rx_channel,
+        &netinfo_table[0].net_rdr, pkt->data, PACKET_SIZE,
+        (size_t *)&pkt->length) != SHM_NET_OK) {
+        return -1;
+    }
+    return 0;
+}
+
 
 /*
  * Attach to an existing TAP interface named 'ifname'.
@@ -398,7 +413,7 @@ void* io_thread()
         /* Read from shmstream and write to tap interface */
         while (packets_read < MAX_PACKETS_READ &&
             (ret = shm_net_read(netinfo_table[0].rx_channel,
-                    &netinfo_table[0].net_rdr, pkt.data, PACKET_SIZE, 
+                    &netinfo_table[0].net_rdr, pkt.data, PACKET_SIZE,
                     (size_t *)&pkt.length) == SHM_NET_OK)) {
             ret = write(netinfo_table[0].netfd, pkt.data, pkt.length);
             packets_read++;

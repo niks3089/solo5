@@ -17,3 +17,20 @@
  * NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+
+#include <sys/socket.h>
+#include <linux/if.h>
+#include <linux/if_tun.h>
+#include <linux/kvm.h>
+#include <pthread.h>
+#include <sys/eventfd.h>
+#include <sys/epoll.h>
+#include "ukvm.h"
+#include "ukvm_guest.h"
+#include "ukvm_hv_kvm.h"
+#include "ukvm_cpu_x86_64.h"
+#include "shm_net.h"
+#include "writer.h"
+
+int ukvm_net_write(uint8_t nic_index, const uint8_t *buf, size_t len);
+int ukvm_net_read(uint8_t nic_index, struct net_msg *pkt);
