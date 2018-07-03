@@ -302,50 +302,40 @@ static solo5_result_t ping_serve(int verbose, int limit)
         for(i = 0; i < nic_ready_count; i++)
         {
             nic = nic_list[i];
-            if ((ret = solo5_net_read(nic, buf, sizeof buf, &len)) != SOLO5_R_OK) {
-                continue;
-            }
-            p = (struct ether *)&buf;
-            if (memcmp(p->target, macaddr[nic], HLEN_ETHER) &&
-                memcmp(p->target, macaddr_brd, HLEN_ETHER)) {
+            while ((ret = solo5_net_read(nic, buf, sizeof buf, &len)) == SOLO5_R_OK) {
+                p = (struct ether *)&buf;
+                if (memcmp(p->target, macaddr[nic], HLEN_ETHER) &&
+                    memcmp(p->target, macaddr_brd, HLEN_ETHER)) {
+                    continue; /* not ether addressed to us */
+                }
+
                 switch (htons(p->type)) {
                     case ETHERTYPE_ARP:
-                        puts("Received arp request, sending reply\n");
+                        if (handle_arp(nic, buf) != 0)
+                            goto out;
+                        if (verbose)
+                            puts("Received arp request, sending reply\n");
                         break;
                     case ETHERTYPE_IP:
+                        if (handle_ip(nic, buf) != 0)
+                            goto out;
+                        if (verbose)
+                            puts("Received ping, sending reply\n");
                         break;
                     default:
-                        puts("Not the expected packet\n");
+                        if (verbose)
+                            puts("Not the expected packet\n");
+                        goto out;
                 }
-                continue; /* not ether addressed to us */
-            }
 
-            switch (htons(p->type)) {
-                case ETHERTYPE_ARP:
-                    if (handle_arp(nic, buf) != 0)
-                        goto out;
-                    if (verbose)
-                        puts("Received arp request, sending reply\n");
+                if (solo5_net_write(nic, buf, len) != SOLO5_R_OK)
+                    puts("Write error\n");
+
+                received++;
+                if (limit && received == 100000) {
+                    puts("Limit reached, exiting\n");
                     break;
-                case ETHERTYPE_IP:
-                    if (handle_ip(nic, buf) != 0)
-                        goto out;
-                    if (verbose)
-                        puts("Received ping, sending reply\n");
-                    break;
-                default:
-                    if (verbose)
-                        puts("Not the expected packet\n");
-                    goto out;
-            }
-
-            if (solo5_net_write(nic, buf, len) != SOLO5_R_OK)
-                puts("Write error\n");
-
-            received++;
-            if (limit && received == 100000) {
-                puts("Limit reached, exiting\n");
-                break;
+                }
             }
         }
 

@@ -312,7 +312,7 @@ void* io_event_loop()
     events = calloc(MAXEVENTS, sizeof event);
 
     while (1) {
-        n = epoll_wait(epoll_fd, events, MAXEVENTS, 1);
+        n = epoll_wait(epoll_fd, events, MAXEVENTS, -1);
         for (i = 0; i < n; i++) {
             map_entry = events[i].data.ptr;
             entry = &netinfo_table[map_entry->index];
@@ -333,7 +333,6 @@ void* io_event_loop()
                                 pkt.data, ret) != SHM_NET_OK) {
                         /* Don't read from netfd. Instead, wait for tx_channel to
                          * be writable */
-                        assert(0);
                         epoll_ctl(epoll_fd, EPOLL_CTL_DEL,
                                 entry->netfd, NULL);
                         break;
@@ -741,7 +740,6 @@ static int configure_nics(struct ukvm_hv *hv)
         do {
             total_pagesize += X86_GUEST_PAGE_SIZE;
         } while(total_pagesize < total_shm_buf_size);
-
 
         warnx("total_pagesize = 0x%"PRIx64"\n",total_pagesize);
         ukvm_x86_add_pagetables(hv->mem, hv->mem_size, total_pagesize);
