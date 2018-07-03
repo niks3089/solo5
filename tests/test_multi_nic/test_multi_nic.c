@@ -20,7 +20,7 @@
 
 #include "solo5.h"
 #include "../../kernel/lib.c"
-#define NUM_NICS 1
+#define NUM_NICS 2
 
 static void puts(const char *s)
 {
@@ -306,13 +306,6 @@ static solo5_result_t ping_serve(int verbose, int limit)
                 continue;
             }
             p = (struct ether *)&buf;
-            puts("comparision: target:");
-            tohexs(macaddr_s, p->target, HLEN_ETHER);
-            puts(macaddr_s);
-            puts(" local:");
-            tohexs(macaddr_s, macaddr[nic], HLEN_ETHER);
-            puts(macaddr_s);
-            puts("\n");
             if (memcmp(p->target, macaddr[nic], HLEN_ETHER) &&
                 memcmp(p->target, macaddr_brd, HLEN_ETHER)) {
                 switch (htons(p->type)) {
@@ -329,14 +322,16 @@ static solo5_result_t ping_serve(int verbose, int limit)
 
             switch (htons(p->type)) {
                 case ETHERTYPE_ARP:
-                    puts("Received arp request, sending reply\n");
                     if (handle_arp(nic, buf) != 0)
                         goto out;
+                    if (verbose)
+                        puts("Received arp request, sending reply\n");
                     break;
                 case ETHERTYPE_IP:
-                    puts("Received ping, sending reply\n");
                     if (handle_ip(nic, buf) != 0)
                         goto out;
+                    if (verbose)
+                        puts("Received ping, sending reply\n");
                     break;
                 default:
                     if (verbose)
