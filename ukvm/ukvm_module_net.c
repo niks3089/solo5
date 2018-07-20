@@ -254,6 +254,18 @@ static int tap_attach(const char *ifname)
     return fd;
 }
 
+ukvm_fd_index_map *search_map_entry_from_fd(int fd)
+{
+  int i = 0;
+  int total_entries = num_nics * FDS_PER_NIC;
+  do {
+      if (fd_index_map[i].fd == fd) {
+          return &fd_index_map[i];
+      }
+  } while (++i < total_entries);
+  return NULL;
+}
+
 ukvm_fd_index_map *add_index_to_map(int fd, int nic_index)
 {
     static int next = 0;
@@ -344,10 +356,14 @@ void* io_event_loop()
                 }
             } else if (fd == entry->ukvm_tx_xon_evfd) {
                 /* tx channel is writable again */
-                warnx("tx shmstream is writable again");
-                if (read(entry->ukvm_tx_xon_evfd, &clear, 8) < 0) {}
+                if ((er = read(entry->ukvm_tx_xon_evfd, &clear, 8))
+                    != 8) {
+                  assert(0);
+                }
 
                 /* Start reading from netfd */
+                map_entry = search_map_entry_from_fd(entry->netfd);
+                assert(map_entry);
                 event.data.ptr = map_entry;
                 event.events = EPOLLIN;
                 epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->netfd, &event);
@@ -369,7 +385,6 @@ void* io_event_loop()
                         /* Don't clear the eventfd */
                         break;
                     } else {
-                        warnx("Failed to read from shmstream");
                         assert(0);
                     }
                 } while (1);
@@ -520,9 +535,8 @@ static void hypercall_netxon(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     }
 
     uint64_t xon = 1;
-    if (write(netinfo_table[ni->index].ukvm_tx_xon_evfd, &xon, 8)) {
-        warnx("Failed to write into shm tx fd at NIC:%d\n", ni->index);
-        ni->ret = -1;
+    if (write(netinfo_table[ni->index].ukvm_tx_xon_evfd, &xon, 8) != 8) {
+        assert(0);
     } else {
         ni->ret = 0;
     }
@@ -540,7 +554,10 @@ static void hypercall_netnotify(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     }
 
     uint64_t read_data = 1;
-    if (write(netinfo_table[ni->index].ukvm_rx_evfd, &read_data, 8)) {}
+    if (write(netinfo_table[ni->index].ukvm_rx_evfd, &read_data, 8) != 8)
+    {
+        assert(0);
+    }
     ni->ret = 0;
 }
 
@@ -573,29 +590,32 @@ static int configure_epoll(ukvm_netinfo_table *entry)
     }
 
     if ((entry->ukvm_rx_evfd = eventfd(0, EFD_NONBLOCK)) < 0) {
-        warnx("Failed to create eventfd");
+        warnx("Failed to create eventfd for ukvm rx");
         return -1;
     }
 
     event.data.ptr = add_index_to_map(entry->ukvm_rx_evfd, entry->index);
     event.events = EPOLLIN;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->ukvm_rx_evfd, &event) < 0) {
-        warnx("Failed to set up fd at epoll_ctl");
+        warnx("Failed to set up fd at epoll_ctl for ukvm rx");
         return -1;
     }
 
     if ((entry->ukvm_tx_xon_evfd = eventfd(0, EFD_NONBLOCK)) < 0) {
-        warnx("Failed to create eventfd");
+        warnx("Failed to create eventfd for ukvm tx xon");
         return -1;
     }
 
     event.data.ptr = add_index_to_map(entry->ukvm_tx_xon_evfd, entry->index);
     event.events = EPOLLIN;
-    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->ukvm_tx_xon_evfd, &event);
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD,
+          entry->ukvm_tx_xon_evfd, &event) < 0) {
+        warnx("Failed to create eventfd for ukvm tx xon");
+        return -1;
+    }
 
-    entry->solo5_tx_xon_evfd = eventfd(0, EFD_NONBLOCK);
-    if (entry->solo5_tx_xon_evfd < 0) {
-        warnx("Failed to create eventfd");
+    if ((entry->solo5_tx_xon_evfd = eventfd(0, EFD_NONBLOCK)) < 0) {
+        warnx("Failed to create eventfd for solo5 tx xon");
         return -1;
     }
 
