@@ -276,11 +276,9 @@ l2fwd_main_loop(void)
     RTE_LOG(INFO, L2FWD, "entering main loop on lcore %u\n", lcore_id);
 
     for (i = 0; i < qconf->n_rx_port; i++) {
-
         portid = qconf->rx_port_list[i];
         RTE_LOG(INFO, L2FWD, " -- lcoreid=%u portid=%u\n", lcore_id,
             portid);
-
     }
 
     while (!force_quit) {
