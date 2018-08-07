@@ -61,6 +61,9 @@ struct ukvm_module *ukvm_core_modules[] = {
 #ifdef UKVM_MODULE_DPDK
     &ukvm_module_dpdk,
 #endif
+#ifdef UKVM_MODULE_NETMAP
+    &ukvm_module_netmap,
+#endif
     NULL,
 };
 #define NUM_MODULES ((sizeof ukvm_core_modules / sizeof (struct ukvm_module *)) - 1)

@@ -83,8 +83,8 @@ static int mac_updating = 1;
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 128
-#define RTE_TEST_TX_DESC_DEFAULT 512
+#define RTE_TEST_RX_DESC_DEFAULT 1024 
+#define RTE_TEST_TX_DESC_DEFAULT 1024 
 static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 
@@ -112,7 +112,6 @@ static struct rte_eth_dev_tx_buffer *tx_buffer[RTE_MAX_ETHPORTS];
 static struct rte_eth_conf port_conf = {
     .rxmode = {
         .split_hdr_size = 0,
-        .ignore_offload_bitfield = 1,
         .offloads = DEV_RX_OFFLOAD_CRC_STRIP,
     },
     .txmode = {
@@ -242,7 +241,7 @@ l2fwd_readfrom_shm()
 
     if (data) {
         //rte_memcpy should be used but throws compiler warning
-        memcpy(data, pkt.data, pkt.length);
+        rte_memcpy(data, pkt.data, pkt.length);
         l2fwd_simple_forward(m, 0);
     }
 }
@@ -610,7 +609,7 @@ static int setup(struct ukvm_hv *hv)
     /* convert to number of cycles */
     timer_period *= rte_get_timer_hz();
 
-    nb_ports = rte_eth_dev_count();
+    nb_ports = rte_eth_dev_count_avail();
     if (nb_ports == 0) {
         rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
     }
@@ -733,7 +732,6 @@ static int setup(struct ukvm_hv *hv)
         /* init one TX queue on each port */
         fflush(stdout);
         txq_conf = dev_info.default_txconf;
-        txq_conf.txq_flags = ETH_TXQ_FLAGS_IGNORE;
         txq_conf.offloads = local_port_conf.txmode.offloads;
         ret = rte_eth_tx_queue_setup(portid, 0, nb_txd,
                 rte_eth_dev_socket_id(portid),

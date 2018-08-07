@@ -51,13 +51,11 @@
 #define LLADDR(s)      s->sll_addr;
 #endif
 
+#define NUM_NETMAP_SLOTS 64
 #define NUM_TX_SLOTS NUM_NETMAP_SLOTS
 #define NUM_RX_SLOTS NUM_TX_SLOTS
 #define NUM_TX_RINGS 1
 #define NUM_RX_RINGS NUM_TX_RINGS
-
-#define TX_METADATA_SIZE 0x5000
-#define RX_METADATA_SIZE 0x5000
 
 struct nm_data{
     struct nmreq nmreq;
@@ -72,7 +70,6 @@ static struct netmap_ring *txring, *rxring;
 static uint32_t tx_buf_size, rx_buf_size;
 static char *netiface;
 static struct ukvm_netinfo netinfo;
-static struct ukvm_netmap_ringinfo rinfo;
 
 static inline int need_next_slot(uint16_t flags)
 {
@@ -123,9 +120,8 @@ static int source_hwaddr(const char *ifname, char *buf)
 
 static int setup(struct ukvm_hv *hv)
 {
-    int i, ret = 0;
+    int i;
     char *ifname;
-    static struct kvm_userspace_memory_region rxring_region, txring_region;
 
     txring = rxring = NULL;
     tx_buf_size = rx_buf_size = 0;
@@ -136,11 +132,11 @@ static int setup(struct ukvm_hv *hv)
     printf("----- netmap module initialization -----\n");
 
     /* Obtain the MAC address */
-    if (source_hwaddr(netiface, netinfo.mac_str) == -1) {
+    if (source_hwaddr(netiface, (char *)netinfo.mac_address) == -1) {
         err(1, "Could not get the MAC address: %s", netiface);
         return -1;
     }
-    printf("Netmap port: MAC address(%s) on %s\n", netinfo.mac_str, netiface);
+    printf("Netmap port: MAC address(%s) on %s\n", netinfo.mac_address, netiface);
 
     /* Allocate the Netmap data */
     if ((port = calloc(1, sizeof(struct nm_data))) == NULL) {
@@ -241,4 +237,3 @@ struct ukvm_module ukvm_module_netmap = {
     .handle_cmdarg = handle_cmdarg,
     .usage = usage
 };
-

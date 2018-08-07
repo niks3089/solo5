@@ -23,7 +23,7 @@
 all: ukvm-bin
 
 Makefile.ukvm: ukvm-configure
-	./ukvm-configure . blk net gdb dumpcore dpdk
+	./ukvm-configure . blk net gdb dumpcore dpdk netmap
 
 -include Makefile.ukvm
 

@@ -767,6 +767,7 @@ static int configure_nics(struct ukvm_hv *hv)
 
     for (i = 0; i < num_nics; i++) {
 
+        /* If the backend is tap */
         snprintf(intf, sizeof intf, "tap%d", i + 100);
         warnx("Creating interface %s\n", intf);
         netfd = tap_attach(intf);
@@ -788,6 +789,9 @@ static int configure_nics(struct ukvm_hv *hv)
         guest_mac[0] &= 0xfe;
         guest_mac[0] |= 0x02;
         memcpy(netinfo_table[i].netinfo.mac_address, guest_mac, SOLO5_NET_ALEN);
+
+        /* If the backend is netmap */
+        /* If the backend is dpdk */
 
         if (use_shm_stream) {
             int flags = fcntl(netinfo_table[i].netfd, F_GETFL, 0);
