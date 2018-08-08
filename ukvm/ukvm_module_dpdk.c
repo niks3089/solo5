@@ -228,11 +228,13 @@ l2fwd_readfrom_shm()
     struct net_msg pkt;
     struct rte_mbuf *m;
     char *data;
+    size_t read;
 
-    if (ukvm_net_read(0, &pkt) < 0) {
+    if ((read = ukvm_net_read(0, pkt.data, PACKET_SIZE)) < 0) {
         return;
     }
 
+    pkt.length = read;
     m = rte_pktmbuf_alloc(l2fwd_pktmbuf_pool);
     assert(m);
 

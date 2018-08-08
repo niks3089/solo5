@@ -43,6 +43,7 @@
 #include "ukvm_guest.h"
 #include "ukvm_hv_kvm.h"
 #include "ukvm_cpu_x86_64.h"
+#include "ukvm_module_net.h"
 
 #ifdef __linux__
 #define sockaddr_dl    sockaddr_ll
@@ -57,7 +58,7 @@
 #define NUM_TX_RINGS 1
 #define NUM_RX_RINGS NUM_TX_RINGS
 
-struct nm_data{
+struct nm_data {
     struct nmreq nmreq;
     uint64_t nmd_flags;
     struct nm_desc *nmdesc;
@@ -86,11 +87,85 @@ static int handle_cmdarg(char *cmdarg)
     }
 }
 
+#if 0
+int netmap_write()
+{
+    int cur, ret = 0, read;
+    char *buf;
+
+    do {
+        if (!nm_ring_space(txring)) {
+            ret = -1;
+            break;
+        }
+
+        cur = txring->cur;
+        buf = NETMAP_BUF(txring, txring->slot[cur].buf_idx);
+        if ((read = ukvm_net_read(0, (uint8_t *)buf, txring->nr_buf_size)) < 0) {
+            break;
+        }
+        txring->slot[cur].len = read;
+        txring->head = nm_ring_next(txring, cur);
+    } while (1);
+
+    if (ioctl(nmd_fd, NIOCTXSYNC, NULL) < 0) {
+        ret = -1;
+    }
+    return ret;
+}
+#endif
+
+int netmap_read(uint8_t **buf)
+{
+    struct  nm_pkthdr pkt;
+    int ret = -1;
+
+    *buf = nm_nextpkt(port->nmdesc, &pkt);
+    if (*buf) {
+        ret = pkt.len;
+    }
+    return ret;
+}
+
+void netmap_queue(int len)
+{
+    if (!nm_ring_space(txring)) {
+        assert(0);
+    }
+
+    int cur = txring->cur;
+    txring->slot[cur].len = len;
+    txring->head = nm_ring_next(txring, cur);
+}
+
+void netmap_flush()
+{
+    if (ioctl(nmd_fd, NIOCTXSYNC, NULL) < 0) {
+    }
+}
+
+uint8_t* netmap_buf()
+{
+    if (!nm_ring_space(txring)) {
+        return NULL;
+    }
+
+    return (uint8_t*)NETMAP_BUF(txring, txring->slot[txring->cur].buf_idx);
+}
+
+int netmap_fd()
+{ return nmd_fd; }
+
+uint8_t* netmap_mac()
+{
+    return netinfo.mac_address;
+}
+
 /*
  * locate the src mac address for our interface, put it
  * into the user-supplied buffer. return 0 if ok, -1 on error.
  */
-static int source_hwaddr(const char *ifname, char *buf)
+static int source_hwaddr(const char *ifname)
 {
     struct ifaddrs *ifaphead, *ifap;
 
@@ -109,9 +184,8 @@ static int source_hwaddr(const char *ifname, char *buf)
         if (strncmp(ifap->ifa_name, ifname, IFNAMSIZ) != 0)
             continue;
         mac = (uint8_t *)LLADDR(sdl);
-        sprintf(buf, "%02x:%02x:%02x:%02x:%02x:%02x",
-            mac[0], mac[1], mac[2],
-            mac[3], mac[4], mac[5]);
+        memcpy(netinfo.mac_address, mac, SOLO5_NET_ALEN); 
+        warnx("mac address is %x\n", netinfo.mac_address[2]);
         break;
     }
     freeifaddrs(ifaphead);
@@ -132,7 +206,7 @@ static int setup(struct ukvm_hv *hv)
     printf("----- netmap module initialization -----\n");
 
     /* Obtain the MAC address */
-    if (source_hwaddr(netiface, (char *)netinfo.mac_address) == -1) {
+    if (source_hwaddr(netiface) == -1) {
         err(1, "Could not get the MAC address: %s", netiface);
         return -1;
     }
