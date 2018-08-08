@@ -240,7 +240,6 @@ l2fwd_readfrom_shm()
     data = rte_pktmbuf_append(m, pkt.length);
 
     if (data) {
-        //rte_memcpy should be used but throws compiler warning
         rte_memcpy(data, pkt.data, pkt.length);
         l2fwd_simple_forward(m, 0);
     }

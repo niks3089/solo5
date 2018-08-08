@@ -76,10 +76,15 @@ struct timespec readtime;
 struct timespec writetime;
 struct timespec epochtime;
 
+typedef int    (*net_reader) (int, void*, size_t);
+typedef size_t (*net_writer) (int, void*, size_t);
+
 #define FDS_PER_NIC 5
 typedef struct {
     int                     index;
     int                     netfd;
+    net_reader              reader;
+    net_writer              writer;
     /* Eventfd to notify solo5 that pkt is ready to be read from shmstream */
     int                     solo5_rx_fd;
     /* Eventfd to notify solo5 that it its tx side is X'ONed and can start to queue packets */
