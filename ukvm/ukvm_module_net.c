@@ -86,7 +86,7 @@ struct timespec epochtime;
 
 #define FDS_PER_NIC 5
 typedef struct {
-    int                     index;
+    int                     nic;
     int                     netfd;
     /* Eventfd to notify solo5 that pkt is ready to be read from shmstream */
     int                     solo5_rx_fd;
@@ -100,51 +100,51 @@ typedef struct {
     struct muchannel        *tx_channel;
     struct muchannel_reader net_rdr;
     struct ukvm_netinfo     netinfo;
-} ukvm_netinfo_table;
+} ukvm_nic_table_entry;
 
 /* map between fds and the nic index it belongs to */
 typedef struct {
     int    fd;
-    int    index;
-} ukvm_fd_index_map;
+    int    nic;
+} ukvm_fd_nic_map;
 
-static ukvm_netinfo_table *netinfo_table;
-static ukvm_fd_index_map  *fd_index_map;
+static ukvm_nic_table_entry *nic_table;
+static ukvm_fd_nic_map  *fd_nic_map;
 
-typedef void (*net_reader) (ukvm_netinfo_table *);
-typedef void (*net_writer) (ukvm_netinfo_table *);
+typedef void (*net_reader) (ukvm_nic_table_entry *);
+typedef void (*net_writer) (ukvm_nic_table_entry *);
 net_reader    backend_driver_reader;
 net_writer    backend_driver_writer;
 
-/* Write packets read from tap/netmap/dpdk fd to shmstream */ 
-int ukvm_net_write(uint8_t nic_index, const uint8_t *buf, size_t len)
+/* Write packets read from tap/netmap/dpdk fd to shmstream */
+int ukvm_net_write(uint8_t nic, const uint8_t *buf, size_t len)
 {
-    if (nic_index >= num_nics || !buf || !len) {
+    if (nic >= num_nics || !buf || !len) {
         return -1;
     }
-    if (shm_net_write(netinfo_table[nic_index].tx_channel, buf,
+    if (shm_net_write(nic_table[nic].tx_channel, buf,
           len) != SHM_NET_OK) {
       return -1;
     }
     return 0;
 }
 
-int ukvm_net_read(uint8_t nic_index, uint8_t *buf, size_t len)
+int ukvm_net_read(uint8_t nic, uint8_t *buf, size_t len)
 {
     size_t read = 0;
 
-    if (nic_index >= num_nics || !buf || !len) {
+    if (nic >= num_nics || !buf || !len) {
         return -1;
     }
-    if (shm_net_read(netinfo_table[nic_index].rx_channel,
-        &netinfo_table[nic_index].net_rdr, buf, len,
+    if (shm_net_read(nic_table[nic].rx_channel,
+        &nic_table[nic].net_rdr, buf, len,
         &read) != SHM_NET_OK) {
         return -1;
     }
     return read;
 }
 
-void from_tap_to_shm(ukvm_netinfo_table *entry)
+void from_tap_to_shm(ukvm_nic_table_entry *entry)
 {
     int ret;
     uint64_t packets_read = 0;
@@ -153,7 +153,7 @@ void from_tap_to_shm(ukvm_netinfo_table *entry)
     while (packets_read < MAX_PACKETS_READ &&
         ((ret = read(entry->netfd,
             pkt.data, PACKET_SIZE)) > 0)) {
-        if (ukvm_net_write(entry->index,
+        if (ukvm_net_write(entry->nic,
                     pkt.data, ret) != 0) {
             /* Don't read from netfd. Instead, wait for tx_channel to
              * be writable */
@@ -168,7 +168,7 @@ void from_tap_to_shm(ukvm_netinfo_table *entry)
     }
 }
 
-void from_netmap_to_shm(ukvm_netinfo_table *entry)
+void from_netmap_to_shm(ukvm_nic_table_entry *entry)
 {
     uint64_t packets_read = 0;
     int len, ret;
@@ -176,7 +176,7 @@ void from_netmap_to_shm(ukvm_netinfo_table *entry)
 
     while (packets_read < MAX_PACKETS_READ &&
         (len = netmap_read(&buf) >= 0)) {
-        if (ukvm_net_write(entry->index,
+        if (ukvm_net_write(entry->nic,
                     buf, len) != 0) {
             /* Don't read from netfd. Instead, wait for tx_channel to
              * be writable */
@@ -192,7 +192,7 @@ void from_netmap_to_shm(ukvm_netinfo_table *entry)
     }
 }
 
-void from_shm_to_tap(ukvm_netinfo_table *entry)
+void from_shm_to_tap(ukvm_nic_table_entry *entry)
 {
     uint64_t clear = 0, wrote = 1;
     int ret, err;
@@ -221,7 +221,7 @@ void from_shm_to_tap(ukvm_netinfo_table *entry)
     } while (1);
 }
 
-void from_shm_to_netmap(ukvm_netinfo_table *entry)
+void from_shm_to_netmap(ukvm_nic_table_entry *entry)
 {
     uint8_t *buf;
     int err, ret;
@@ -380,46 +380,46 @@ static int tap_attach(const char *ifname)
     return fd;
 }
 
-ukvm_fd_index_map *search_map_entry_from_fd(int fd)
+ukvm_fd_nic_map *search_map_entry_from_fd(int fd)
 {
   int i = 0;
   int total_entries = num_nics * FDS_PER_NIC;
   do {
-      if (fd_index_map[i].fd == fd) {
-          return &fd_index_map[i];
+      if (fd_nic_map[i].fd == fd) {
+          return &fd_nic_map[i];
       }
   } while (++i < total_entries);
   return NULL;
 }
 
-ukvm_fd_index_map *add_index_to_map(int fd, int nic_index)
+ukvm_fd_nic_map *add_nic_to_map(int fd, int nic)
 {
     static int next = 0;
 
     assert(next < FDS_PER_NIC * num_nics);
 
-    warnx("Associating %d fd to %d NIC index\n", fd, nic_index);
-    fd_index_map[next].fd = fd;
-    fd_index_map[next].index = nic_index;
-    return &fd_index_map[next++];
+    warnx("Associating %d fd to %d NIC index\n", fd, nic);
+    fd_nic_map[next].fd = fd;
+    fd_nic_map[next].nic = nic;
+    return &fd_nic_map[next++];
 }
 
 int netfd_notify_fn(void *data)
 {
-    ukvm_fd_index_map *map_entry = (ukvm_fd_index_map *)data;
-    return map_entry->index;
+    ukvm_fd_nic_map *map_entry = (ukvm_fd_nic_map *)data;
+    return map_entry->nic;
 }
 
 /* Solo5 is woken up when the shmstream is writable again */
 int read_solo5_tx_xon_fn(void *data)
 {
     uint64_t clear = 0;
-    ukvm_fd_index_map *map_entry = (ukvm_fd_index_map *)data;
+    ukvm_fd_nic_map *map_entry = (ukvm_fd_nic_map *)data;
 
     if (read(map_entry->fd, &clear, 8) < 0) {
         return -1;
     }
-    return map_entry->index;
+    return map_entry->nic;
 }
 
 /* Solo5 is woken up when there is data to be read from
@@ -427,23 +427,23 @@ int read_solo5_tx_xon_fn(void *data)
 int read_solo5_rx_fn(void *data)
 {
     uint64_t clear = 0;
-    ukvm_fd_index_map *map_entry = (ukvm_fd_index_map *)data;
+    ukvm_fd_nic_map *map_entry = (ukvm_fd_nic_map *)data;
 
     /* Clears the notification */
     if (read(map_entry->fd, &clear, 8) < 0) {
         return -1;
     }
-    return map_entry->index;
+    return map_entry->nic;
 }
 
 void* io_event_loop()
 {
     int n, i, er, fd;
     uint64_t clear = 0;
-    struct epoll_event event;
-    struct epoll_event *events;
-    ukvm_netinfo_table *entry = NULL;
-    ukvm_fd_index_map  *map_entry = NULL;
+    struct epoll_event     event;
+    struct epoll_event     *events;
+    ukvm_nic_table_entry   *entry = NULL;
+    ukvm_fd_nic_map  *map_entry = NULL;
 
     events = calloc(MAXEVENTS, sizeof event);
 
@@ -451,7 +451,7 @@ void* io_event_loop()
         n = epoll_wait(epoll_fd, events, MAXEVENTS, -1);
         for (i = 0; i < n; i++) {
             map_entry = events[i].data.ptr;
-            entry = &netinfo_table[map_entry->index];
+            entry = &nic_table[map_entry->nic];
             fd    = map_entry->fd;
             if ((events[i].events & EPOLLERR) ||
                 (events[i].events & EPOLLHUP) ||
@@ -521,7 +521,7 @@ void* io_event_loop()
 #endif
                 backend_driver_writer(entry);
             }
-		}
+		    }
     }
 }
 
@@ -534,9 +534,9 @@ void* io_thread()
     while (1) {
         /* Read packets from tap interface and write to shmstream */
         while (packets_read < MAX_PACKETS_READ &&
-            ((ret = read(netinfo_table[0].netfd, pkt.data, PACKET_SIZE)) > 0)) {
+            ((ret = read(nic_table[0].netfd, pkt.data, PACKET_SIZE)) > 0)) {
             packets_read++;
-            if (shm_net_write(netinfo_table[0].tx_channel, pkt.data, ret) != SHM_NET_OK) {
+            if (shm_net_write(nic_table[0].tx_channel, pkt.data, ret) != SHM_NET_OK) {
                 ret = 0;
                 break;
             }
@@ -552,16 +552,16 @@ void* io_thread()
         }
         if (packets_read) {
             /* Notify the reader of shmstream */
-            ret = write(netinfo_table[0].solo5_rx_fd, &packets_read, 8);
+            ret = write(nic_table[0].solo5_rx_fd, &packets_read, 8);
             packets_read = 0;
         }
 
         /* Read from shmstream and write to tap interface */
         while (packets_read < MAX_PACKETS_READ &&
-            (ret = shm_net_read(netinfo_table[0].rx_channel,
-                    &netinfo_table[0].net_rdr, pkt.data, PACKET_SIZE,
+            (ret = shm_net_read(nic_table[0].rx_channel,
+                    &nic_table[0].net_rdr, pkt.data, PACKET_SIZE,
                     (size_t *)&pkt.length) == SHM_NET_OK)) {
-            ret = write(netinfo_table[0].netfd, pkt.data, pkt.length);
+            ret = write(nic_table[0].netfd, pkt.data, pkt.length);
             packets_read++;
             assert(ret == pkt.length);
         }
@@ -593,9 +593,9 @@ static void hypercall_net_shm_info(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     if (use_shm_stream) {
         for (i = 0; i < num_nics; i++) {
             info->channel_info[i].tx_channel_addr =
-                netinfo_table[i].rx_channel_guest_addr;
+                nic_table[i].rx_channel_guest_addr;
             info->channel_info[i].rx_channel_addr =
-                netinfo_table[i].rx_channel_guest_addr + rx_shm_size;
+                nic_table[i].rx_channel_guest_addr + rx_shm_size;
         }
         info->num_nics = num_nics;
         info->tx_channel_addr_size = rx_shm_size;
@@ -613,11 +613,11 @@ static void hypercall_netinfo(struct ukvm_hv *hv, ukvm_gpa_t gpa)
     struct ukvm_netinfo *info =
         UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netinfo));
 
-    if (info->index >= num_nics) {
+    if (info->nic >= num_nics) {
         info->ret = -1;
     }
 
-    memcpy(info->mac_address, netinfo_table[info->index].netinfo.mac_address,
+    memcpy(info->mac_address, nic_table[info->nic].netinfo.mac_address,
             SOLO5_NET_ALEN);
     info->ret = 0;
 }
@@ -628,9 +628,9 @@ static void hypercall_netwrite(struct ukvm_hv *hv, ukvm_gpa_t gpa)
         UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netwrite));
     int ret;
 
-    assert (wr->index < num_nics);
+    assert (wr->nic < num_nics);
 
-    ret = write(netinfo_table[wr->index].netfd,
+    ret = write(nic_table[wr->nic].netfd,
             UKVM_CHECKED_GPA_P(hv, wr->data, wr->len), wr->len);
     assert(wr->len == ret);
     wr->ret = 0;
@@ -642,9 +642,9 @@ static void hypercall_netread(struct ukvm_hv *hv, ukvm_gpa_t gpa)
         UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netread));
     int ret;
 
-    assert (rd->index < num_nics);
+    assert (rd->nic < num_nics);
 
-    ret = read(netinfo_table[rd->index].netfd,
+    ret = read(nic_table[rd->nic].netfd,
             UKVM_CHECKED_GPA_P(hv, rd->data, rd->len), rd->len);
     if ((ret == 0) ||
         (ret == -1 && errno == EAGAIN)) {
@@ -659,15 +659,15 @@ static void hypercall_netread(struct ukvm_hv *hv, ukvm_gpa_t gpa)
 static void hypercall_netxon(struct ukvm_hv *hv, ukvm_gpa_t gpa)
 {
     struct ukvm_netwrite *ni =
-        UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netindex));
+        UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_net_nic));
 
-    if (ni->index >= num_nics) {
+    if (ni->nic >= num_nics) {
         ni->ret = -1;
         return;
     }
 
     uint64_t xon = 1;
-    if (write(netinfo_table[ni->index].ukvm_tx_xon_evfd, &xon, 8) != 8) {
+    if (write(nic_table[ni->nic].ukvm_tx_xon_evfd, &xon, 8) != 8) {
         assert(0);
     } else {
         ni->ret = 0;
@@ -678,15 +678,15 @@ static void hypercall_netxon(struct ukvm_hv *hv, ukvm_gpa_t gpa)
 static void hypercall_netnotify(struct ukvm_hv *hv, ukvm_gpa_t gpa)
 {
     struct ukvm_netwrite *ni =
-        UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_netindex));
+        UKVM_CHECKED_GPA_P(hv, gpa, sizeof (struct ukvm_net_nic));
 
-    if (ni->index >= num_nics) {
+    if (ni->nic >= num_nics) {
         ni->ret = -1;
         return;
     }
 
     uint64_t read_data = 1;
-    if (write(netinfo_table[ni->index].ukvm_rx_evfd, &read_data, 8) != 8)
+    if (write(nic_table[ni->nic].ukvm_rx_evfd, &read_data, 8) != 8)
     {
         assert(0);
     }
@@ -715,11 +715,11 @@ static int handle_cmdarg(char *cmdarg)
     }
 }
 
-static int configure_epoll(ukvm_netinfo_table *entry)
+static int configure_epoll(ukvm_nic_table_entry *entry)
 {
     struct epoll_event event;
 
-    event.data.ptr = add_index_to_map(entry->netfd, entry->index);
+    event.data.ptr = add_nic_to_map(entry->netfd, entry->nic);
     event.events = EPOLLIN;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->netfd, &event) < 0) {
         warnx("Failed to set up fd at epoll_ctl");
@@ -731,7 +731,7 @@ static int configure_epoll(ukvm_netinfo_table *entry)
         return -1;
     }
 
-    event.data.ptr = add_index_to_map(entry->ukvm_rx_evfd, entry->index);
+    event.data.ptr = add_nic_to_map(entry->ukvm_rx_evfd, entry->nic);
     event.events = EPOLLIN;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, entry->ukvm_rx_evfd, &event) < 0) {
         warnx("Failed to set up fd at epoll_ctl for ukvm rx");
@@ -743,7 +743,7 @@ static int configure_epoll(ukvm_netinfo_table *entry)
         return -1;
     }
 
-    event.data.ptr = add_index_to_map(entry->ukvm_tx_xon_evfd, entry->index);
+    event.data.ptr = add_nic_to_map(entry->ukvm_tx_xon_evfd, entry->nic);
     event.events = EPOLLIN;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD,
           entry->ukvm_tx_xon_evfd, &event) < 0) {
@@ -759,7 +759,7 @@ static int configure_epoll(ukvm_netinfo_table *entry)
     return 0;
 }
 
-static int configure_shmstream_events(struct ukvm_hv *hv, ukvm_netinfo_table *entry)
+static int configure_shmstream_events(struct ukvm_hv *hv, ukvm_nic_table_entry *entry)
 {
     if (!entry) {
         return -1;
@@ -797,7 +797,7 @@ static int configure_shmstream_events(struct ukvm_hv *hv, ukvm_netinfo_table *en
     return 0;
 }
 
-static int configure_shmstream_mem(struct ukvm_hv *hv, ukvm_netinfo_table *entry,
+static int configure_shmstream_mem(struct ukvm_hv *hv, ukvm_nic_table_entry *entry,
         uint8_t *shm_mem)
 {
     static uint64_t offset;
@@ -855,18 +855,18 @@ static int configure_nics(struct ukvm_hv *hv)
     uint8_t guest_mac[6];
     uint8_t *shm_mem = NULL;
 
-    netinfo_table = (ukvm_netinfo_table *)calloc(1,
-            num_nics * sizeof(ukvm_netinfo_table));
+    nic_table = (ukvm_nic_table_entry *)calloc(1,
+            num_nics * sizeof(ukvm_nic_table_entry));
 
-    if (!netinfo_table) {
+    if (!nic_table) {
         warnx("Failed to create netinfo table");
         return -1;
     }
 
-    fd_index_map = (ukvm_fd_index_map *)calloc(1,
-            num_nics * FDS_PER_NIC * sizeof(ukvm_fd_index_map));
+    fd_nic_map = (ukvm_fd_nic_map *)calloc(1,
+            num_nics * FDS_PER_NIC * sizeof(ukvm_fd_nic_map));
 
-    if (!fd_index_map) {
+    if (!fd_nic_map) {
         warnx("Failed to create fd index map");
         return -1;
     }
@@ -912,8 +912,8 @@ static int configure_nics(struct ukvm_hv *hv)
                 err(1, "Could not attach interface: %s", intf);
                 exit(1);
             }
-            netinfo_table[i].index = i;
-            netinfo_table[i].netfd = netfd;
+            nic_table[i].nic = i;
+            nic_table[i].netfd = netfd;
 
             rfd = open("/dev/urandom", O_RDONLY);
 
@@ -925,44 +925,44 @@ static int configure_nics(struct ukvm_hv *hv)
             close(rfd);
             guest_mac[0] &= 0xfe;
             guest_mac[0] |= 0x02;
-            memcpy(netinfo_table[i].netinfo.mac_address, guest_mac, SOLO5_NET_ALEN);
+            memcpy(nic_table[i].netinfo.mac_address, guest_mac, SOLO5_NET_ALEN);
         } else if (backend_driver == NETMAP) {
             /* If the backend is netmap */
-            netinfo_table[i].index = i;
-            netinfo_table[i].netfd = netmap_fd();
-            memcpy(netinfo_table[i].netinfo.mac_address, netmap_mac(), SOLO5_NET_ALEN);
+            nic_table[i].nic = i;
+            nic_table[i].netfd = netmap_fd();
+            memcpy(nic_table[i].netinfo.mac_address, netmap_mac(), SOLO5_NET_ALEN);
         } else if (backend_driver == DPDK) {
             /* If the backend is dpdk */
         }
 
         if (use_shm_stream) {
             if (backend_driver == TAP) {
-                int flags = fcntl(netinfo_table[i].netfd, F_GETFL, 0);
-                fcntl(netinfo_table[i].netfd, F_SETFL, flags | O_NONBLOCK);
+                int flags = fcntl(nic_table[i].netfd, F_GETFL, 0);
+                fcntl(nic_table[i].netfd, F_SETFL, flags | O_NONBLOCK);
             }
 
-            if (configure_shmstream_events(hv, &netinfo_table[i])) {
+            if (configure_shmstream_events(hv, &nic_table[i])) {
                 err(1, "Failed to configure shmstream events");
                 exit(1);
             }
 
-            if (configure_shmstream_mem(hv, &netinfo_table[i], shm_mem)) {
+            if (configure_shmstream_mem(hv, &nic_table[i], shm_mem)) {
                 err(1, "Failed to configure shmstream memory");
                 exit(1);
             }
 
-            assert(ukvm_core_register_pollfd(netinfo_table[i].solo5_rx_fd,
+            assert(ukvm_core_register_pollfd(nic_table[i].solo5_rx_fd,
                     read_solo5_rx_fn,
-                    add_index_to_map(netinfo_table[i].solo5_rx_fd, i)) == 0);
+                    add_nic_to_map(nic_table[i].solo5_rx_fd, i)) == 0);
             if (use_event_thread) {
-                assert(ukvm_core_register_pollfd(netinfo_table[i].solo5_tx_xon_evfd,
+                assert(ukvm_core_register_pollfd(nic_table[i].solo5_tx_xon_evfd,
                         read_solo5_tx_xon_fn,
-                        add_index_to_map(netinfo_table[i].solo5_tx_xon_evfd, i)) == 0);
+                        add_nic_to_map(nic_table[i].solo5_tx_xon_evfd, i)) == 0);
             }
         } else {
-            assert(ukvm_core_register_pollfd(netinfo_table[i].netfd,
+            assert(ukvm_core_register_pollfd(nic_table[i].netfd,
                     netfd_notify_fn,
-                    add_index_to_map(netinfo_table[i].netfd, i)) == 0);
+                    add_nic_to_map(nic_table[i].netfd, i)) == 0);
         }
     }
 
