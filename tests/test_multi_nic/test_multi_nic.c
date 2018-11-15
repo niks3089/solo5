@@ -19,7 +19,7 @@
  */
 
 #include "solo5.h"
-#include "../../kernel/lib.c"
+#include "../../bindings/lib.c"
 #define NUM_NICS 2
 
 static void puts(const char *s)
