@@ -35,7 +35,7 @@ uintptr_t __stack_chk_guard = 0x00deadbeef0d0a00;
 static const char
 stack_chk_fail_message[] = "Solo5: ABORT: Stack corruption detected\n";
 
-__attribute__((noreturn))
+__attribute__((noreturn, weak))
 void __stack_chk_fail(void)
 {
     platform_puts(stack_chk_fail_message, sizeof stack_chk_fail_message);

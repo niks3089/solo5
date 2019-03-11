@@ -118,11 +118,9 @@ case $(uname -s) in
         # If the host toolchain is NOT configured to build PIE exectuables by
         # default, assume it has no support for that and apply a workaround by
         # locating the spt tender starting at a virtual address of 1 GB.
-        if ! cc_has_pie; then
-            warn "Host toolchain does not build PIE executables, spt guest size will be limited to 1GB"
-            warn "Consider upgrading to a Linux distribution with PIE support"
-            SPT_EXTRA_LDFLAGS="-Wl,-Ttext-segment=0x40000000"
-        fi
+        warn "Host toolchain does not build PIE executables, spt guest size will be limited to 1GB"
+        warn "Consider upgrading to a Linux distribution with PIE support"
+        SPT_EXTRA_LDFLAGS="-Wl,-Ttext-segment=0x40000000"
 
         BUILD_HVT="yes"
         BUILD_SPT="yes"
